@@ -330,12 +330,13 @@ function viewDashboard() {
   <section class="row three">
     <article class="card">${bars('By daily profile', groupBy(st.closed, t => t.profile, PROFILE_ORDER, profLabel))}</article>
     <article class="card">${bars('By entry time (ET)', groupBy(st.closed, timeBucket, BUCKETS))}</article>
-    <article class="card">${bars('Rules followed vs broken', groupBy(st.closed, t => t.followed === true ? 'Followed' : t.followed === false ? 'Broken' : null, ['Followed', 'Broken']))}</article>
+    <article class="card">${bars('By entry timeframe', groupBy(st.closed, t => t.entryTf, ['15m', '5m', '3m']))}</article>
   </section>
 
-  <section class="row even">
+  <section class="row three">
+    <article class="card">${bars('Rules followed vs broken', groupBy(st.closed, t => t.followed === true ? 'Followed' : t.followed === false ? 'Broken' : null, ['Followed', 'Broken']))}</article>
+    <article class="card">${bars('Cost of mistakes', groupBy(st.closed, t => t.mistakes || [], MISTAKES), 'net R per tag')}</article>
     <article class="card">${lessonsCard(rd.lessons)}</article>
-    <article class="card">${bars('Cost of mistakes', groupBy(st.closed, t => t.mistakes || [], MISTAKES), 'net R of trades with each tag')}</article>
   </section>
 
   <section class="row one">
@@ -677,7 +678,7 @@ async function viewDetail(id) {
         <div><dt>Stop distance</dt><dd>${stopPts != null ? stopPts.toFixed(2) + ' pts' : '—'}</dd></div>
         <div><dt>Size</dt><dd>${esc(t.size || '—')}</dd></div>
         <div><dt>Risk</dt><dd>${num(t.riskUsd) != null ? '$' + num(t.riskUsd).toFixed(2) : '—'}</dd></div>
-        <div><dt>Entry time</dt><dd>${t.time ? esc(t.time) + ' ET' : '—'}</dd></div>
+        <div><dt>Entry time · TF</dt><dd>${t.time ? esc(t.time) + ' ET' : '—'}${t.entryTf ? ' · ' + esc(t.entryTf) : ''}</dd></div>
       </dl>
     </article>
     <article class="card">
@@ -834,6 +835,7 @@ async function viewForm(id) {
       <section class="card fs tr-only">
         <h2>Execution</h2>
         <div class="fgrid">
+          <div class="fld wide"><span>Entry timeframe</span>${seg('entryTf', [['15m', '15m'], ['5m', '5m'], ['3m', '3m']], d.entryTf || '')}</div>
           ${numField('entry', 'Entry price', d.entry)}
           ${numField('stop', 'Stop loss', d.stop)}
           ${numField('target', 'Target', d.target)}
@@ -1105,12 +1107,12 @@ const PLAYBOOK = [
   ] },
   { n: '03', when: 'After 9:30', title: 'Entry: two confirmations', items: [
     ['<b>CISD #1 · 15m</b>, at the POI. Confirms the reversal.', ['18:00 and 1:00 profiles: already happened overnight.', '8:00 profile: happens in NY.']],
-    '<b>CISD #2 · 5m</b>, after 9:30, on the pullback: the closure through the opposing candles. <b>This is the entry.</b>',
+    ['<b>CISD #2 · 15m, 5m or 3m</b>, after 9:30, on the pullback: the closure through the opposing candles. <b>This is the entry.</b>', ['Pick the timeframe by how fast price is moving: faster move → lower timeframe.', 'A lower timeframe gives a tighter stop for the same setup.']],
     '<b>Stop</b> beyond the swing · <b>partial</b> at 2R.',
     'Only when <b>bias and profile agree</b>. Otherwise, no trade.',
   ] },
 ];
-const PB_TF = [['Daily', 'bias'], ['7H', 'profile'], ['15m', 'reversal CISD'], ['5m', 'entry CISD']];
+const PB_TF = [['Daily', 'bias'], ['7H', 'profile'], ['15m', 'reversal CISD'], ['15m · 5m · 3m', 'entry CISD']];
 const PB_KILL = [
   'The opposing run goes through <b>50% of yesterday’s range</b> (low → high). Bullish: the low of day stays above it. Bearish: the high of day stays below it.',
   'A <b>15m close through the high or low of the day</b> your trade depends on.',
@@ -1134,7 +1136,7 @@ function viewPlaybook() {
     <article class="card pb-step pb-kill">
       <div class="pb-h"><span class="pb-n mono">✕</span><div><p class="pb-when">Any one → no trade</p><h2>Invalidations</h2></div></div>
       ${pbList(PB_KILL)}
-      <p class="pb-foot">Pick one entry timeframe for the test (5m) and keep it. Don’t switch depending on the day.</p>
+      <p class="pb-foot">Log the entry timeframe on every trade. The dashboard shows results per timeframe.</p>
     </article>
   </section>`;
 }
@@ -1234,7 +1236,7 @@ async function exportJSON() {
 }
 
 function exportCSV() {
-  const cols = ['date', 'time', 'kind', 'acct', 'instrument', 'dir', 'prevDir', 'prevType', 'prevClose', 'bias', 'conf', 'flow', 'profile', 'smt', 'inval', 'planEntry', 'planStop', 'planPartial', 'planTarget', 'actual', 'biasOk', 'failSign', 'failTime', 'lesson', 'entry', 'stop', 'target', 'exit', 'size', 'riskUsd', 'R', 'pnlUsd', 'followed', 'takeAgain', 'emotion', 'mistakes', 'reasons', 'missed', 'notes'];
+  const cols = ['date', 'time', 'kind', 'acct', 'instrument', 'dir', 'entryTf', 'prevDir', 'prevType', 'prevClose', 'bias', 'conf', 'flow', 'profile', 'smt', 'inval', 'planEntry', 'planStop', 'planPartial', 'planTarget', 'actual', 'biasOk', 'failSign', 'failTime', 'lesson', 'entry', 'stop', 'target', 'exit', 'size', 'riskUsd', 'R', 'pnlUsd', 'followed', 'takeAgain', 'emotion', 'mistakes', 'reasons', 'missed', 'notes'];
   const q = v => { const s = v == null ? '' : String(v); return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
   const rows = [...S.trades].sort(byTime).map(t => cols.map(c => {
     if (c === 'R') { const r = tradeR(t); return r == null ? '' : r.toFixed(3); }
@@ -1313,7 +1315,7 @@ function sampleData() {
     const mm = hh === 9 ? 31 + Math.floor(rnd() * 28) : Math.floor(rnd() * 59);
     out.push({
       id: uid(), sample: true, kind: 'trade', acct: 'backtest', date: ds, time: `${pad2(hh)}:${pad2(mm)}`,
-      instrument: 'US100.cash', dir, ...session(dir === 'long' ? 'bull' : 'bear', R > 0),
+      instrument: 'US100.cash', dir, entryTf: pick(['5m', '5m', '15m', '3m']), ...session(dir === 'long' ? 'bull' : 'bear', R > 0),
       entry, stop: dir === 'long' ? entry - stopPts : entry + stopPts, target: dir === 'long' ? entry + 2 * stopPts : entry - 2 * stopPts,
       exit: +(dir === 'long' ? entry + R * stopPts : entry - R * stopPts).toFixed(2), size: +(50 / stopPts).toFixed(2), riskUsd: 50, pnl: '', rOverride: '',
       checks: { bias: true, cisd15: true, sig5: rnd() < 0.9, room: true, open: rnd() < 0.75 }, followed, takeAgain: followed ? 'yes' : 'no',
