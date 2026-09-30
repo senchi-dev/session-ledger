@@ -389,3 +389,24 @@ q.lesson, .lessons q { quotes: "“" "”"; font-style: italic; color: var(--ink
 .pv-dots i { width: 14px; height: 4px; border-radius: 99px; background: var(--rule-2); }
 .pv-dots i.on { background: var(--pos); }
 @media (max-width: 600px) { .q-row, .read li { grid-template-columns: 22px minmax(0, 1fr); gap: 8px; } }
+
+/* ---------- playbook ---------- */
+.pb-tf { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-bottom: 14px; }
+.pb-tf > div { display: flex; gap: 8px; align-items: baseline; background: var(--surface); border: 1px solid var(--rule); border-radius: 99px; padding: 6px 14px; font-size: 13px; }
+.pb-tf .mono { font-weight: 500; }
+.pb-arrow { color: var(--muted); }
+.pb { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+@media (max-width: 960px) { .pb { grid-template-columns: minmax(0, 1fr); } }
+.pb-step { padding: 22px 24px; }
+.pb-h { display: flex; gap: 16px; align-items: flex-start; margin-bottom: 14px; }
+.pb-n { font-size: 28px; font-weight: 500; letter-spacing: -.03em; line-height: 1; color: var(--muted); min-width: 40px; }
+.pb-when { margin: 0 0 3px; font-size: 11.5px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); }
+.pb-h h2 { font-size: 17px; color: var(--ink); letter-spacing: -.01em; }
+.pb-list { margin: 0; padding-left: 18px; display: grid; gap: 8px; color: var(--ink-2); line-height: 1.55; }
+.pb-list .pb-list { margin-top: 6px; gap: 5px; }
+.pb-list li::marker { color: var(--muted); }
+.pb-list b { color: var(--ink); font-weight: 600; }
+.pb-kill { border-color: color-mix(in srgb, var(--neg) 35%, var(--rule)); }
+.pb-kill .pb-n { color: var(--neg); }
+.pb-kill .pb-when { color: var(--neg); }
+.pb-foot { margin: 16px 0 0; padding-top: 12px; border-top: 1px solid var(--rule); font-size: 13px; color: var(--muted); }

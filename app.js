@@ -810,7 +810,7 @@ async function viewForm(id) {
       </section>
 
       <section class="card fs">
-        <div class="sec-h"><div><h2>Before 9:30</h2><p class="sec-sub">Write it before the open. Don’t rewrite it after the fact.</p></div><span class="count mono" id="pre-n"></span></div>
+        <div class="sec-h"><div><h2>Before 9:30</h2><p class="sec-sub">Write it before the open. Don’t rewrite it after the fact. <a class="link" href="#playbook">Playbook</a></p></div><span class="count mono" id="pre-n"></span></div>
         <ol class="qs">
           ${qrow(1, "Yesterday’s daily", `<div class="q-subs">
             <div class="q-sub"><span>Candle</span>${seg('prevDir', Object.entries(PREV_DIR), d.prevDir)}</div>
@@ -1088,6 +1088,57 @@ async function saveForm(form) {
   }
 }
 
+// ───────────────────────── playbook ─────────────────────────
+const PLAYBOOK = [
+  { n: '01', when: 'Before Asia', title: 'Daily bias: context', items: [
+    'Mark the relevant highs and lows of the last 30 daily candles.',
+    ['How did yesterday engage them?', ['<b>Manipulation</b> → reversal. Trade away from the swing.', '<b>Closure through</b> → continuation.', '<b>Range</b> → neutral. No trade.']],
+    'Write down the <b>draw</b> and the <b>invalidation</b>: 50% of yesterday’s range.',
+  ] },
+  { n: '02', when: '18:00 → 8:00', title: 'Profile: 18:00 prints, 1:00 confirms, 8:00 executes', items: [
+    '<b>18:00 · Asia</b>: context only. Did it make the opposing extreme at a 1H+ POI?',
+    ['<b>1:00 · London</b>: confirmation. Did it make the extreme, or hold away from the Asia one?', ['<b>Kill check</b>: London already expanded most of the way to the draw → no trade.']],
+    ['<b>8:00 · New York</b>: execution. Name the profile:', [
+      '<b>18:00 or 1:00 reversal</b>: the extreme is in. Wait for a <b>breakthrough</b>: a continuation signature on the pullback.',
+      '<b>8:00 reversal</b>: the extreme isn’t in yet. Wait for a <b>reversal</b>: NY runs the level into a POI, then a CISD confirms.']],
+    'The profile answers “breakthrough or reversal?” before 9:30.',
+  ] },
+  { n: '03', when: 'After 9:30', title: 'Entry: two confirmations', items: [
+    ['<b>CISD #1 · 15m</b>, at the POI. Confirms the reversal.', ['18:00 and 1:00 profiles: already happened overnight.', '8:00 profile: happens in NY.']],
+    '<b>CISD #2 · 5m</b>, after 9:30, on the pullback: the closure through the opposing candles. <b>This is the entry.</b>',
+    '<b>Stop</b> beyond the swing · <b>partial</b> at 2R.',
+    'Only when <b>bias and profile agree</b>. Otherwise, no trade.',
+  ] },
+];
+const PB_TF = [['Daily', 'bias'], ['7H', 'profile'], ['15m', 'reversal CISD'], ['5m', 'entry CISD']];
+const PB_KILL = [
+  'The opposing run goes through <b>50% of yesterday’s range</b> (low → high). Bullish: the low of day stays above it. Bearish: the high of day stays below it.',
+  'A <b>15m close through the high or low of the day</b> your trade depends on.',
+  '<b>London exhausted the range</b> toward the draw.',
+];
+function pbList(items) {
+  return `<ul class="pb-list">${items.map(it => Array.isArray(it) ? `<li>${it[0]}${pbList(it[1])}</li>` : `<li>${it}</li>`).join('')}</ul>`;
+}
+function viewPlaybook() {
+  app.innerHTML = `
+  <header class="page-head">
+    <div><h1>Playbook</h1><p class="sub">AM framework · the order to think in, every morning</p></div>
+    <a class="btn" href="#new">Start today’s entry</a>
+  </header>
+  <section class="pb-tf" aria-label="Timeframes">${PB_TF.map(([t, j]) => `<div><span class="mono">${t}</span><span class="muted">${j}</span></div>`).join('<span class="pb-arrow" aria-hidden="true">→</span>')}</section>
+  <section class="pb">
+    ${PLAYBOOK.map(s => `<article class="card pb-step">
+      <div class="pb-h"><span class="pb-n mono">${s.n}</span><div><p class="pb-when">${s.when}</p><h2>${s.title}</h2></div></div>
+      ${pbList(s.items)}
+    </article>`).join('')}
+    <article class="card pb-step pb-kill">
+      <div class="pb-h"><span class="pb-n mono">✕</span><div><p class="pb-when">Any one → no trade</p><h2>Invalidations</h2></div></div>
+      ${pbList(PB_KILL)}
+      <p class="pb-foot">Pick one entry timeframe for the test (5m) and keep it. Don’t switch depending on the day.</p>
+    </article>
+  </section>`;
+}
+
 // ───────────────────────── settings ─────────────────────────
 async function viewSettings() {
   const st = S.settings;
@@ -1302,6 +1353,7 @@ async function route() {
   else if (view === 'edit') await viewForm(id);
   else if (view === 'trade') await viewDetail(id);
   else if (view === 'settings') await viewSettings();
+  else if (view === 'playbook') viewPlaybook();
   else viewDashboard();
   window.scrollTo(0, 0);
 }
