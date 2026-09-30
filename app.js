@@ -25,7 +25,24 @@ const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
 
 // ───────────────────────── vocabulary ─────────────────────────
 const ACCTS = { backtest: 'Backtest', demo: 'Demo', live: 'Live' };
-const PROFILES = { '18': '18 reversal', london: 'London reversal', nyrev: 'NY reversal', nymanip: 'NY manipulation', other: 'Other / none' };
+const PROFILES = { '18': '18:00 reversal', london: '1:00 reversal', nyrev: '8:00 reversal', other: 'No clear profile' };
+const PROFILE_ORDER = [...Object.keys(PROFILES), 'nymanip'];
+const profLabel = k => PROFILES[k] || { nymanip: 'NY manipulation' }[k] || '';
+const BIAS = { bull: 'Bullish', bear: 'Bearish', none: 'Neutral' };
+const PREV_DIR = { up: 'Up-close', down: 'Down-close' };
+const PREV_TYPE = { manip: 'Manipulation', closure: 'Closure through', inside: 'Inside / neither' };
+const PREV_CLOSE = { upper: 'Upper third', middle: 'Middle', lower: 'Lower third' };
+const FLOW = { with: 'With yesterday', against: 'Against yesterday' };
+const SMT_OPTS = ['ES', 'NQ', 'YM', 'None'];
+// yesterday's close direction vs today's bias
+const flowOf = d => !d.prevDir || !d.bias || d.bias === 'none' ? '' : (d.bias === 'bull') === (d.prevDir === 'up') ? 'with' : 'against';
+const has = v => v != null && String(v).trim() !== '';
+const PRE_DONE = [
+  d => d.prevDir && d.prevType && d.prevClose, d => d.bias && d.conf, d => d.flow, d => d.profile,
+  d => (d.smt || []).length, d => has(d.inval), d => has(d.planEntry) && has(d.planStop) && has(d.planTarget),
+];
+const POST_DONE = [d => d.actual, d => d.biasOk, d => d.followed === true || d.followed === false, d => has(d.lesson)];
+const countDone = (checks, d) => checks.filter(fn => fn(d)).length;
 const CHECKS = [
   ['bias', 'Bias checklist done'], ['cisd15', '15m CISD confirmed'], ['sig5', '5m continuation signature'],
   ['room', '2R of room to the draw'], ['open', '9:30 did what I demanded'],
@@ -169,6 +186,35 @@ function groupBy(closed, keyFn, order, labelFn = k => k) {
   });
 }
 
+// how often the pre-session read was right, split by any key
+function rateBy(list, keyFn, order, labelFn = k => k, okFn = t => t.biasOk === 'right') {
+  const m = new Map();
+  list.forEach(t => {
+    const k = keyFn(t);
+    if (k == null || k === '') return;
+    if (!m.has(k)) m.set(k, []);
+    m.get(k).push(okFn(t));
+  });
+  const keys = order ? order.filter(k => m.has(k)) : [...m.keys()];
+  return keys.map(k => { const a = m.get(k); return { key: k, label: labelFn(k), n: a.length, rate: a.filter(Boolean).length / a.length }; });
+}
+function readStats(list) {
+  const graded = list.filter(t => t.biasOk === 'right' || t.biasOk === 'wrong');
+  const called = list.filter(t => t.profile && t.actual);
+  const rated = list.filter(t => t.followed === true || t.followed === false);
+  const rate = (a, fn) => a.length ? a.filter(fn).length / a.length : null;
+  return {
+    graded, called,
+    bias: rate(graded, t => t.biasOk === 'right'),
+    profile: rate(called, t => t.profile === t.actual),
+    plan: rate(rated, t => t.followed),
+    byFlow: rateBy(graded, t => t.flow, ['with', 'against'], k => FLOW[k]),
+    byConf: rateBy(graded, t => t.conf ? String(t.conf) : null, ['3', '2', '1'], k => `Confidence ${k}/3`),
+    byProfile: rateBy(called, t => t.profile, PROFILE_ORDER, profLabel, t => t.profile === t.actual),
+    lessons: [...list].filter(t => has(t.lesson)).sort((a, b) => byTime(b, a)).slice(0, 6),
+  };
+}
+
 function filtered() {
   let list = S.trades;
   if (F.acct !== 'all') list = list.filter(t => t.acct === F.acct);
@@ -238,6 +284,7 @@ function viewDashboard() {
   if (!S.trades.length) return viewWelcome();
   const list = filtered();
   const st = stats(list);
+  const rd = readStats(list);
   const nts = list.filter(t => t.kind === 'notrade');
   const month = prefs.get('calMonth', latestMonth(list));
   const pf = st.pf == null ? '—' : st.pf === Infinity ? '∞' : st.pf.toFixed(2);
@@ -274,13 +321,24 @@ function viewDashboard() {
   </section>
 
   <section class="row three">
-    <article class="card">${bars('By daily profile', groupBy(st.closed, t => t.profile, Object.keys(PROFILES), k => PROFILES[k]))}</article>
+    <article class="card">${readCard(rd)}</article>
+    <article class="card">${rateBars('Bias accuracy by order flow', rd.byFlow, 'is your read better with or against yesterday?')}
+      <div class="rule-gap"></div>${rateBars('By confidence', rd.byConf)}</article>
+    <article class="card">${rateBars('Profile called correctly', rd.byProfile, 'expected profile vs what happened')}</article>
+  </section>
+
+  <section class="row three">
+    <article class="card">${bars('By daily profile', groupBy(st.closed, t => t.profile, PROFILE_ORDER, profLabel))}</article>
     <article class="card">${bars('By entry time (ET)', groupBy(st.closed, timeBucket, BUCKETS))}</article>
     <article class="card">${bars('Rules followed vs broken', groupBy(st.closed, t => t.followed === true ? 'Followed' : t.followed === false ? 'Broken' : null, ['Followed', 'Broken']))}</article>
   </section>
 
   <section class="row even">
+    <article class="card">${lessonsCard(rd.lessons)}</article>
     <article class="card">${bars('Cost of mistakes', groupBy(st.closed, t => t.mistakes || [], MISTAKES), 'net R of trades with each tag')}</article>
+  </section>
+
+  <section class="row one">
     <article class="card">${recent(list)}</article>
   </section>`;
 
@@ -357,6 +415,33 @@ function bars(title, groups, note) {
   }).join('')}</ul>`;
 }
 
+function rateBars(title, groups, note) {
+  const head = `<div class="card-h"><h2>${esc(title)}</h2></div>${note ? `<p class="card-note">${esc(note)}</p>` : ''}`;
+  if (!groups.length) return head + '<p class="empty">Grade a few sessions to see this.</p>';
+  return head + `<ul class="bars rate">${groups.map(g => `<li><span class="b-label">${esc(g.label)}</span><span class="b-meta mono muted">n ${g.n}</span>
+    <span class="b-track"><span class="b-fill ${g.rate >= .5 ? 'pos' : 'neg'}" style="left:0;width:${(g.rate * 100).toFixed(1)}%"></span></span>
+    <span class="b-val mono ${g.rate >= .5 ? 'pos' : 'neg'}">${fmtPct(g.rate)}</span></li>`).join('')}</ul>`;
+}
+
+function readCard(rd) {
+  const tone = v => v == null ? '' : v >= .5 ? 'pos' : 'neg';
+  return `<div class="card-h"><h2>Reading the day</h2><span class="muted small">${plural(rd.graded.length, 'graded session')}</span></div>
+    <div class="test-big mono ${tone(rd.bias)}">${fmtPct(rd.bias)}</div>
+    <p class="small muted" style="margin:-6px 0 0">of daily biases were right</p>
+    <dl class="test-dl">
+      <div><dt>Profile called</dt><dd class="mono ${tone(rd.profile)}">${fmtPct(rd.profile)}</dd></div>
+      <div><dt>Plan followed</dt><dd class="mono ${rd.plan == null ? '' : rd.plan >= .9 ? 'pos' : 'neg'}">${fmtPct(rd.plan)}</dd></div>
+    </dl>
+    <p class="status">${rd.graded.length < 20 ? `Too early to judge: ${plural(20 - rd.graded.length, 'more session')} before these numbers mean much.` : 'Enough sessions to start trusting these splits.'}</p>`;
+}
+
+function lessonsCard(items) {
+  return `<div class="card-h"><h2>Latest lessons</h2><span class="muted small">one sentence per session</span></div>
+  ${items.length ? `<ul class="lessons">${items.map(t => `<li><a href="#trade/${t.id}">
+    <span class="mono muted small">${fmtDate(t.date)}${t.biasOk ? ` · <span class="${t.biasOk === 'right' ? 'pos' : 'neg'}">bias ${t.biasOk}</span>` : ''}</span>
+    <q>${esc(t.lesson)}</q></a></li>`).join('')}</ul>` : '<p class="empty">Lessons you write after each session show up here.</p>'}`;
+}
+
 function calendar(list, ym) {
   const [y, m] = ym.split('-').map(Number);
   const first = new Date(y, m - 1, 1);
@@ -413,7 +498,7 @@ function recent(list) {
   return `<div class="card-h"><h2>Latest entries</h2><a class="link small" href="#trades">View all</a></div>
   ${items.length ? `<ul class="recent">${items.map(t => {
     const r = tradeR(t);
-    const what = t.kind === 'notrade' ? 'No-trade day' : `${esc(t.instrument)} · ${t.dir === 'short' ? 'Short' : 'Long'}${t.profile ? ' · ' + esc(PROFILES[t.profile] || '') : ''}`;
+    const what = t.kind === 'notrade' ? 'No-trade day' : `${esc(t.instrument)} · ${t.dir === 'short' ? 'Short' : 'Long'}${t.profile ? ' · ' + esc(profLabel(t.profile)) : ''}`;
     return `<li><a href="#trade/${t.id}"><span class="mono muted">${fmtDate(t.date)}</span><span>${what}</span><span class="mono ${cls(r)}">${t.kind === 'notrade' ? '<span class="muted">pass</span>' : fmtR(r)}</span></a></li>`;
   }).join('')}</ul>` : '<p class="empty">Nothing logged in this filter.</p>'}`;
 }
@@ -487,7 +572,7 @@ function viewTrades() {
   if (q.out !== 'all') list = list.filter(t => q.out === 'notrade' ? t.kind === 'notrade' : t.kind === 'trade' && outcome(tradeR(t)) === q.out);
   if (q.text) {
     const s = q.text.toLowerCase();
-    list = list.filter(t => [t.instrument, t.notes, PROFILES[t.profile], ...(t.mistakes || []), ...(t.reasons || []), ...Object.values(t.review || {})]
+    list = list.filter(t => [t.instrument, t.notes, profLabel(t.profile), t.lesson, t.failSign, t.planEntry, t.planStop, t.planPartial, t.planTarget, ...(t.mistakes || []), ...(t.reasons || []), ...Object.values(t.review || {})]
       .join(' ').toLowerCase().includes(s));
   }
   list = [...list].sort((a, b) => byTime(b, a));
@@ -515,21 +600,28 @@ function viewTrades() {
   $$('.tt tbody tr').forEach(tr => tr.addEventListener('click', () => { location.hash = '#trade/' + tr.dataset.id; }));
 }
 
+function readCell(t) {
+  const b = { bull: 'Bull', bear: 'Bear', none: 'Neutral' }[t.bias];
+  if (!b && !t.profile) return '<span class="muted">—</span>';
+  const mark = t.biasOk === 'right' ? ' <span class="pos" title="Bias right">✓</span>' : t.biasOk === 'wrong' ? ' <span class="neg" title="Bias wrong">✗</span>' : '';
+  return `<span class="muted">${esc([b, t.profile ? profLabel(t.profile).replace(' reversal', '') : ''].filter(Boolean).join(' · '))}</span>${mark}`;
+}
+
 function tradeTable(list) {
   return `<div class="card table-wrap"><table class="tt">
-  <thead><tr><th>Date</th><th>Account</th><th>Instrument</th><th>Side</th><th>Profile</th><th class="r">Result</th><th class="r">P&amp;L</th><th>Rules</th><th class="r">Shots</th></tr></thead>
+  <thead><tr><th>Date</th><th>Account</th><th>Instrument</th><th>Side</th><th>Read</th><th class="r">Result</th><th class="r">P&amp;L</th><th>Rules</th><th class="r">Shots</th></tr></thead>
   <tbody>${list.map(t => {
     const shots = (t.images || []).length || '';
     if (t.kind === 'notrade') {
       return `<tr class="nt" data-id="${t.id}"><td class="mono">${fmtDate(t.date)} <span class="muted">${weekday(t.date)}</span></td><td>${tag(ACCTS[t.acct] || '—')}</td>
-      <td colspan="3">No-trade day${(t.reasons || []).length ? ' · ' + esc(t.reasons.join(', ')) : ''}</td><td class="r mono">pass</td><td></td>
+      <td colspan="2">No-trade day${(t.reasons || []).length ? ' · ' + esc(t.reasons.join(', ')) : ''}</td><td>${readCell(t)}</td><td class="r mono">pass</td><td></td>
       <td>${t.missed ? tag('missed trade', 'bad') : tag('good pass', 'good')}</td><td class="r mono">${shots}</td></tr>`;
     }
     const r = tradeR(t), p = tradePnl(t);
     return `<tr data-id="${t.id}"><td class="mono">${fmtDate(t.date)} <span class="muted">${weekday(t.date)}${t.time ? ' ' + esc(t.time) : ''}</span></td>
     <td>${tag(ACCTS[t.acct] || '—')}</td><td>${esc(t.instrument || '—')}</td>
     <td><span class="side ${t.dir === 'short' ? 'short' : 'long'}">${t.dir === 'short' ? 'Short' : 'Long'}</span></td>
-    <td class="muted">${esc(PROFILES[t.profile] || '—')}</td>
+    <td>${readCell(t)}</td>
     <td class="r mono ${cls(r)}">${r == null ? '<span class="muted">open</span>' : fmtR(r)}</td><td class="r mono ${cls(p)}">${fmtUsd(p)}</td>
     <td>${t.followed === true ? tag('followed', 'good') : t.followed === false ? tag('broken', 'bad') : '<span class="muted">—</span>'}</td>
     <td class="r mono muted">${shots}</td></tr>`;
@@ -570,30 +662,32 @@ async function viewDetail(id) {
            <div class="mono ${cls(p)}">${fmtUsd(p)}</div>
            <p class="small muted" style="margin:10px 0 0">${r == null ? 'Add an exit price to close it.' : outcome(r) === 'win' ? 'Win' : outcome(r) === 'loss' ? 'Loss' : 'Breakeven'}${planned != null ? ` · planned ${planned.toFixed(2)}R` : ''}</p>`}
     </article>
+    ${isNT ? `
+    <article class="card span2">
+      <h2 style="margin-bottom:12px">Why no trade</h2>
+      <div class="chips">${(t.reasons || []).map(x => tag(x)).join('') || '<span class="muted">No reason logged</span>'}</div>
+    </article>` : `
     <article class="card">
-      <h2 style="margin-bottom:12px">${isNT ? 'Context' : 'Execution'}</h2>
+      <h2 style="margin-bottom:12px">Execution</h2>
       <dl class="kv">
-        ${isNT ? `
-          <div><dt>Bias</dt><dd>${esc({ bull: 'Bullish', bear: 'Bearish', none: 'None' }[t.bias] || '—')}</dd></div>
-          <div><dt>Profile</dt><dd>${esc(PROFILES[t.profile] || '—')}</dd></div>`
-        : `
-          <div><dt>Entry</dt><dd>${esc(t.entry || '—')}</dd></div>
-          <div><dt>Stop</dt><dd>${esc(t.stop || '—')}</dd></div>
-          <div><dt>Target</dt><dd>${esc(t.target || '—')}</dd></div>
-          <div><dt>Exit</dt><dd>${esc(t.exit || '—')}</dd></div>
-          <div><dt>Stop distance</dt><dd>${stopPts != null ? stopPts.toFixed(2) + ' pts' : '—'}</dd></div>
-          <div><dt>Size</dt><dd>${esc(t.size || '—')}</dd></div>
-          <div><dt>Risk</dt><dd>${num(t.riskUsd) != null ? '$' + num(t.riskUsd).toFixed(2) : '—'}</dd></div>
-          <div><dt>Bias · profile</dt><dd>${esc(({ bull: 'Bull', bear: 'Bear', none: 'None' }[t.bias] || '—') + ' · ' + (PROFILES[t.profile] || '—'))}</dd></div>`}
+        <div><dt>Entry</dt><dd>${esc(t.entry || '—')}</dd></div>
+        <div><dt>Stop</dt><dd>${esc(t.stop || '—')}</dd></div>
+        <div><dt>Target</dt><dd>${esc(t.target || '—')}</dd></div>
+        <div><dt>Exit</dt><dd>${esc(t.exit || '—')}</dd></div>
+        <div><dt>Stop distance</dt><dd>${stopPts != null ? stopPts.toFixed(2) + ' pts' : '—'}</dd></div>
+        <div><dt>Size</dt><dd>${esc(t.size || '—')}</dd></div>
+        <div><dt>Risk</dt><dd>${num(t.riskUsd) != null ? '$' + num(t.riskUsd).toFixed(2) : '—'}</dd></div>
+        <div><dt>Entry time</dt><dd>${t.time ? esc(t.time) + ' ET' : '—'}</dd></div>
       </dl>
     </article>
     <article class="card">
-      <h2 style="margin-bottom:12px">${isNT ? 'Why no trade' : 'Process'}</h2>
-      ${isNT ? `<div class="chips">${(t.reasons || []).map(x => tag(x)).join('') || '<span class="muted">No reason logged</span>'}</div>` : `
+      <h2 style="margin-bottom:12px">Process</h2>
       <ul class="checklist">${CHECKS.map(([k, l]) => `<li><span class="mk ${(t.checks || {})[k] ? 'ok' : 'muted'}">${(t.checks || {})[k] ? '✓' : '·'}</span>${esc(l)}</li>`).join('')}</ul>
-      <p style="margin:0 0 10px">${t.followed === true ? tag('Rules followed', 'good') : t.followed === false ? tag('Rules broken', 'bad') : ''} ${t.takeAgain ? tag(t.takeAgain === 'yes' ? 'Would take again' : 'Would not take again', t.takeAgain === 'yes' ? 'good' : 'bad') : ''} ${t.emotion ? tag('Calm ' + t.emotion + '/5') : ''}</p>
-      ${(t.mistakes || []).length ? `<div class="chips">${t.mistakes.map(m => tag(m, 'bad')).join('')}</div>` : '<p class="small muted" style="margin:0">No mistakes tagged.</p>'}`}
-    </article>
+      <p style="margin:0 0 10px">${t.takeAgain ? tag(t.takeAgain === 'yes' ? 'Would take again' : 'Would not take again', t.takeAgain === 'yes' ? 'good' : 'bad') : ''} ${t.emotion ? tag('Calm ' + t.emotion + '/5') : ''}</p>
+      ${(t.mistakes || []).length ? `<div class="chips">${t.mistakes.map(m => tag(m, 'bad')).join('')}</div>` : '<p class="small muted" style="margin:0">No mistakes tagged.</p>'}
+    </article>`}
+    <article class="card span2">${preBlock(t)}</article>
+    <article class="card">${postBlock(t)}</article>
     <article class="card span2">
       <h2 style="margin-bottom:12px">Review${qk ? ` <span class="muted">· ${esc(Q_LABEL[qk])}</span>` : ''}</h2>
       ${answered.length ? `<div class="qa">${answered.map(q => `<div><h3>${esc(q)}</h3><p>${esc(t.review[q])}</p></div>`).join('')}</div>` : '<p class="empty">No review answers yet. <a class="link" href="#edit/' + t.id + '">Add them</a></p>'}
@@ -620,6 +714,35 @@ async function viewDetail(id) {
       location.hash = '#trades';
     });
   });
+}
+
+function numbered(rows) {
+  return `<ol class="read">${rows.map(([q, a], i) => `<li><span class="q-num mono">${pad2(i + 1)}</span><div><h3>${esc(q)}</h3><div class="a">${a || '<span class="muted">Not answered</span>'}</div></div></li>`).join('')}</ol>`;
+}
+function preBlock(t) {
+  const n = countDone(PRE_DONE, t);
+  const prev = [PREV_DIR[t.prevDir], PREV_TYPE[t.prevType], t.prevClose && 'closed in the ' + PREV_CLOSE[t.prevClose].toLowerCase()].filter(Boolean).join(' · ');
+  const smt = (t.smt || []).length ? (t.smt.includes('None') ? 'No SMT' : t.smt.join(', ') + ' failed') : '';
+  const plan = [['Entry trigger', t.planEntry], ['Stop', t.planStop], ['Partial', t.planPartial], ['Target', t.planTarget]].filter(([, v]) => has(v));
+  return `<div class="card-h"><h2>Before 9:30</h2><span class="count mono ${n === 7 ? 'pos' : 'muted'}">${n}/7</span></div>` + numbered([
+    ["Yesterday's daily", esc(prev)],
+    ['Daily bias', t.bias ? `<span class="${t.bias === 'bull' ? 'pos' : t.bias === 'bear' ? 'neg' : ''}">${esc(BIAS[t.bias])}</span>${t.conf ? ` <span class="muted">· confidence ${t.conf}/3</span>` : ''}` : ''],
+    ['Order flow', esc(FLOW[t.flow] || '')],
+    ['Expected profile', esc(profLabel(t.profile))],
+    ['SMT at the key level', esc(smt)],
+    ['Invalidation', has(t.inval) ? `<span class="mono">${esc(t.inval)}</span>` : ''],
+    ['Plan', plan.length ? `<dl class="kv tight">${plan.map(([k, v]) => `<div><dt>${k}</dt><dd>${esc(v)}</dd></div>`).join('')}</dl>` : ''],
+  ]);
+}
+function postBlock(t) {
+  const n = countDone(POST_DONE, t);
+  const hit = t.profile && t.actual ? (t.profile === t.actual ? tag('called it', 'good') : tag('missed', 'bad')) : '';
+  return `<div class="card-h"><h2>After the session</h2><span class="count mono ${n === 4 ? 'pos' : 'muted'}">${n}/4</span></div>` + numbered([
+    ['Profile that happened', t.actual ? `${esc(profLabel(t.actual))} ${hit}` : ''],
+    ['Bias', t.biasOk ? `${tag(t.biasOk === 'right' ? 'Right' : 'Wrong', t.biasOk === 'right' ? 'good' : 'bad')}${t.biasOk === 'wrong' && (has(t.failSign) || t.failTime) ? `<p class="fail">${t.failTime ? `<span class="mono">${esc(t.failTime)} ET</span> · ` : ''}${esc(t.failSign || '')}</p>` : ''}` : ''],
+    ['Followed the plan', t.followed === true ? tag('Yes', 'good') : t.followed === false ? tag('No', 'bad') : ''],
+    ['Lesson', has(t.lesson) ? `<q class="lesson">${esc(t.lesson)}</q>` : ''],
+  ]);
 }
 
 function reviewKey(d) {
@@ -658,11 +781,12 @@ async function viewForm(id) {
   const st = S.settings;
   const d = existing ? structuredClone(existing) : {
     id: uid(), kind: 'trade', acct: prefs.get('lastAcct', 'backtest'), date: today(), time: '',
-    instrument: prefs.get('lastInstr', (st.instruments[0] || {}).name || ''), dir: 'long', bias: 'bull', profile: 'london',
+    instrument: prefs.get('lastInstr', (st.instruments[0] || {}).name || ''), dir: 'long', bias: '', profile: '', prevDir: '', prevType: '', prevClose: '', conf: null, flow: '', smt: [], inval: '',
+    planEntry: '', planStop: '', planPartial: '', planTarget: '', actual: '', biasOk: '', failSign: '', failTime: '', lesson: '',
     entry: '', stop: '', target: '', exit: '', size: '', riskUsd: +(st.accountSize * st.riskPct / 100).toFixed(2), pnl: '', rOverride: '',
     checks: {}, followed: null, takeAgain: '', emotion: 3, mistakes: [], reasons: [], missed: false, review: {}, notes: '', images: [], created: Date.now(),
   };
-  d.checks = d.checks || {}; d.mistakes = d.mistakes || []; d.reasons = d.reasons || []; d.review = d.review || {};
+  d.checks = d.checks || {}; d.mistakes = d.mistakes || []; d.reasons = d.reasons || []; d.review = d.review || {}; d.smt = d.smt || [];
   const imgs = existing ? (await DB.imagesOf(id)).sort((a, b) => (d.images || []).indexOf(a.id) - (d.images || []).indexOf(b.id)) : [];
   const form = { d, imgs: imgs.map(i => ({ ...i, url: trackUrl(i.blob) })), removed: [] };
   const instOpts = [...new Set([...st.instruments.map(i => i.name), d.instrument].filter(Boolean))];
@@ -682,9 +806,29 @@ async function viewForm(id) {
           <label class="fld tr-only"><span>Entry time (ET)</span><input type="time" data-f="time" value="${esc(d.time)}"></label>
           <label class="fld tr-only"><span>Instrument</span><select data-f="instrument">${instOpts.map(i => `<option ${i === d.instrument ? 'selected' : ''}>${esc(i)}</option>`).join('')}</select></label>
           <div class="fld tr-only"><span>Direction</span>${seg('dir', [['long', 'Long'], ['short', 'Short']], d.dir, 'pn')}</div>
-          <div class="fld"><span>Daily bias</span>${seg('bias', [['bull', 'Bullish'], ['bear', 'Bearish'], ['none', 'None']], d.bias, 'pn')}</div>
-          <div class="fld wide"><span>Daily profile</span>${seg('profile', Object.entries(PROFILES), d.profile)}</div>
         </div>
+      </section>
+
+      <section class="card fs">
+        <div class="sec-h"><div><h2>Before 9:30</h2><p class="sec-sub">Write it before the open. Don’t rewrite it after the fact.</p></div><span class="count mono" id="pre-n"></span></div>
+        <ol class="qs">
+          ${qrow(1, "Yesterday’s daily", `<div class="q-subs">
+            <div class="q-sub"><span>Candle</span>${seg('prevDir', Object.entries(PREV_DIR), d.prevDir)}</div>
+            <div class="q-sub"><span>Type</span>${seg('prevType', Object.entries(PREV_TYPE), d.prevType)}</div>
+            <div class="q-sub"><span>Closed in the</span>${seg('prevClose', Object.entries(PREV_CLOSE), d.prevClose)}</div></div>`)}
+          ${qrow(2, 'Daily bias', `<div class="q-subs">
+            <div class="q-sub"><span>Direction</span>${seg('bias', Object.entries(BIAS), d.bias, 'pn')}</div>
+            <div class="q-sub"><span>Confidence</span>${seg('conf', [['1', '1'], ['2', '2'], ['3', '3']], d.conf == null ? '' : String(d.conf))}</div></div>`)}
+          ${qrow(3, 'Does the bias go with or against yesterday’s order flow?', `${seg('flow', Object.entries(FLOW), d.flow)}<span class="hint" id="flow-hint"></span>`)}
+          ${qrow(4, 'Profile expected', seg('profile', Object.entries(PROFILES), d.profile))}
+          ${qrow(5, 'SMT at the key level: which index failed?', chips('smt', SMT_OPTS, d.smt))}
+          ${qrow(6, 'Invalidation level', `<input class="q-in mono" type="text" inputmode="decimal" data-f="inval" value="${esc(d.inval)}" placeholder="One price, e.g. 30,461.7">`)}
+          ${qrow(7, 'Plan', `<div class="q-plan">
+            ${planField('planEntry', 'Entry trigger', d.planEntry, '5m CISD after 9:30')}
+            ${planField('planStop', 'Stop', d.planStop, 'Above the high of day')}
+            ${planField('planPartial', 'Partial', d.planPartial, '2R, before the 1H FVG')}
+            ${planField('planTarget', 'Target', d.planTarget, 'PDL')}</div>`)}
+        </ol>
       </section>
 
       <section class="card fs tr-only">
@@ -706,7 +850,6 @@ async function viewForm(id) {
         <div class="checks">${CHECKS.map(([k, l]) => `<label class="check"><input type="checkbox" data-check="${k}" ${d.checks[k] ? 'checked' : ''}>${esc(l)}</label>`).join('')}</div>
         <div class="stack">
           <div class="fgrid">
-            <div class="fld"><span>Followed my rules?</span>${seg('followed', [['yes', 'Yes'], ['no', 'No']], d.followed === true ? 'yes' : d.followed === false ? 'no' : '', 'pn')}</div>
             <div class="fld"><span>How calm was I? (1–5)</span>${seg('emotion', [['1', '1'], ['2', '2'], ['3', '3'], ['4', '4'], ['5', '5']], String(d.emotion || ''))}</div>
           </div>
           <div><p class="sub-h">Mistakes</p>${chips('mistakes', MISTAKES, d.mistakes, 'bad')}</div>
@@ -719,6 +862,20 @@ async function viewForm(id) {
           <div><p class="sub-h">Conditions that were missing</p>${chips('reasons', NOTRADE_REASONS, d.reasons)}</div>
           <div class="fld"><span>Did I miss a valid trade?</span>${seg('missed', [['no', 'No, good pass'], ['yes', 'Yes, I missed one']], d.missed ? 'yes' : 'no', 'pn')}</div>
         </div>
+      </section>
+
+      <section class="card fs">
+        <div class="sec-h"><div><h2>After the session</h2><p class="sec-sub">Fill this in during your review, with a cool head.</p></div><span class="count mono" id="post-n"></span></div>
+        <ol class="qs">
+          ${qrow(1, 'The profile that actually happened', seg('actual', Object.entries(PROFILES), d.actual))}
+          ${qrow(2, 'Was the bias right?', `${seg('biasOk', [['right', 'Right'], ['wrong', 'Wrong']], d.biasOk, 'pn')}
+            <div class="q-fail" id="q-fail" ${d.biasOk === 'wrong' ? '' : 'hidden'}>
+              <input class="q-in" type="text" data-f="failSign" value="${esc(d.failSign)}" placeholder="First sign it was failing">
+              <input class="q-in q-time mono" type="time" data-f="failTime" value="${esc(d.failTime)}" aria-label="When (ET)">
+            </div>`)}
+          ${qrow(3, 'Did I follow the plan?', seg('followed', [['yes', 'Yes'], ['no', 'No']], d.followed === true ? 'yes' : d.followed === false ? 'no' : '', 'pn'))}
+          ${qrow(4, 'One sentence of lesson. Only one.', `<input class="q-in" type="text" maxlength="180" data-f="lesson" value="${esc(d.lesson)}" placeholder="The one thing to remember from today">`)}
+        </ol>
       </section>
 
       <section class="card fs">
@@ -749,7 +906,14 @@ async function viewForm(id) {
   </form>`;
 
   const f = $('#f');
-  const refresh = () => { $('#preview').innerHTML = previewHTML(d); renderReview(form); };
+  const refresh = () => {
+    $('#preview').innerHTML = previewHTML(d); renderReview(form);
+    const pn = countDone(PRE_DONE, d), qn = countDone(POST_DONE, d);
+    $('#pre-n').textContent = pn + '/7'; $('#pre-n').classList.toggle('pos', pn === 7);
+    $('#post-n').textContent = qn + '/4'; $('#post-n').classList.toggle('pos', qn === 4);
+    const sug = flowOf(d);
+    $('#flow-hint').textContent = sug && sug !== d.flow ? `Candle direction suggests “${FLOW[sug].toLowerCase()}”` : '';
+  };
   const renderThumbs = () => {
     $('#thumbs').innerHTML = form.imgs.map((im, i) => `<figure class="thumb"><img src="${im.url}" alt="${esc(im.label)}">
       <figcaption><select data-img="${i}" aria-label="Screenshot label">${IMG_LABELS.map(l => `<option ${l === im.label ? 'selected' : ''}>${l}</option>`).join('')}</select>
@@ -764,17 +928,26 @@ async function viewForm(id) {
     $$('button', g).forEach(x => x.setAttribute('aria-pressed', String(x === b)));
     if (k === 'followed') d.followed = v === 'yes';
     else if (k === 'missed') d.missed = v === 'yes';
-    else if (k === 'emotion') d.emotion = Number(v);
+    else if (k === 'emotion' || k === 'conf') d[k] = Number(v);
     else d[k] = v;
+    if (k === 'flow') d.flowSet = true;
+    if ((k === 'bias' || k === 'prevDir') && !d.flowSet) {
+      d.flow = flowOf(d);
+      $$('[data-seg="flow"] button', f).forEach(x => x.setAttribute('aria-pressed', String(x.dataset.v === d.flow)));
+    }
+    if (k === 'biasOk') $('#q-fail').hidden = v !== 'wrong';
     if (k === 'kind') f.classList.toggle('is-notrade', v === 'notrade');
     refresh();
   }));
   $$('[data-chips]').forEach(g => g.addEventListener('click', e => {
     const b = e.target.closest('button');
     if (!b) return;
-    const arr = d[g.dataset.chips], v = b.dataset.v, on = arr.includes(v);
-    d[g.dataset.chips] = on ? arr.filter(x => x !== v) : [...arr, v];
-    b.setAttribute('aria-pressed', String(!on));
+    const name = g.dataset.chips, v = b.dataset.v, on = d[name].includes(v);
+    let next = on ? d[name].filter(x => x !== v) : [...d[name], v];
+    if (name === 'smt' && !on) next = v === 'None' ? ['None'] : next.filter(x => x !== 'None');
+    d[name] = next;
+    $$('button', g).forEach(x => x.setAttribute('aria-pressed', String(next.includes(x.dataset.v))));
+    refresh();
   }));
   $$('[data-f]', f).forEach(inp => inp.addEventListener('input', () => { d[inp.dataset.f] = inp.value; refresh(); }));
   $$('[data-check]', f).forEach(c => c.addEventListener('change', () => { d.checks[c.dataset.check] = c.checked; }));
@@ -823,11 +996,27 @@ async function viewForm(id) {
   refresh();
 }
 
+function qrow(n, q, ctrl) {
+  return `<li class="q-row"><span class="q-num mono">${pad2(n)}</span><div class="q-body"><p class="q-title">${q}</p><div class="q-ctrl">${ctrl}</div></div></li>`;
+}
+function planField(k, label, v, ph) {
+  return `<label class="fld"><span>${esc(label)}</span><input type="text" data-f="${k}" value="${esc(v)}" placeholder="${esc(ph)}"></label>`;
+}
+
 function numField(k, label, v, hint = '') {
   return `<label class="fld"><span>${esc(label)}</span><input type="number" step="any" inputmode="decimal" data-f="${k}" value="${esc(v ?? '')}">${hint ? `<span class="hint">${esc(hint)}</span>` : ''}</label>`;
 }
 
+function sessionPV(d) {
+  const pn = countDone(PRE_DONE, d), qn = countDone(POST_DONE, d);
+  const bar = (n, of) => `<span class="pv-dots">${Array.from({ length: of }, (_, i) => `<i class="${i < n ? 'on' : ''}"></i>`).join('')}</span>`;
+  return `<div class="pv-session"><div><span class="small muted">Before 9:30</span>${bar(pn, 7)}</div><div><span class="small muted">After the session</span>${bar(qn, 4)}</div></div>`;
+}
+
 function previewHTML(d) {
+  return previewCore(d) + sessionPV(d);
+}
+function previewCore(d) {
   if (d.kind === 'notrade') {
     return `<h2>Summary</h2><div class="pv-big mono muted">pass</div>
       <p class="small muted" style="margin:8px 0 0">${fmtDate(d.date)} · ${weekday(d.date)}. No-trade days count toward your routine and discipline, not your P&amp;L.</p>`;
@@ -994,13 +1183,13 @@ async function exportJSON() {
 }
 
 function exportCSV() {
-  const cols = ['date', 'time', 'kind', 'acct', 'instrument', 'dir', 'bias', 'profile', 'entry', 'stop', 'target', 'exit', 'size', 'riskUsd', 'R', 'pnlUsd', 'followed', 'takeAgain', 'emotion', 'mistakes', 'reasons', 'missed', 'notes'];
+  const cols = ['date', 'time', 'kind', 'acct', 'instrument', 'dir', 'prevDir', 'prevType', 'prevClose', 'bias', 'conf', 'flow', 'profile', 'smt', 'inval', 'planEntry', 'planStop', 'planPartial', 'planTarget', 'actual', 'biasOk', 'failSign', 'failTime', 'lesson', 'entry', 'stop', 'target', 'exit', 'size', 'riskUsd', 'R', 'pnlUsd', 'followed', 'takeAgain', 'emotion', 'mistakes', 'reasons', 'missed', 'notes'];
   const q = v => { const s = v == null ? '' : String(v); return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
   const rows = [...S.trades].sort(byTime).map(t => cols.map(c => {
     if (c === 'R') { const r = tradeR(t); return r == null ? '' : r.toFixed(3); }
     if (c === 'pnlUsd') { const p = tradePnl(t); return p == null ? '' : p.toFixed(2); }
-    if (c === 'mistakes' || c === 'reasons') return (t[c] || []).join('; ');
-    if (c === 'profile') return PROFILES[t.profile] || '';
+    if (c === 'mistakes' || c === 'reasons' || c === 'smt') return (t[c] || []).join('; ');
+    if (c === 'profile' || c === 'actual') return profLabel(t[c]);
     return t[c];
   }).map(q).join(','));
   download(`session-ledger-trades-${today()}.csv`, new Blob([cols.join(',') + '\n' + rows.join('\n')], { type: 'text/csv' }));
@@ -1031,6 +1220,26 @@ function sampleData() {
   const rnd = () => { seed = (seed * 16807) % 2147483647; return (seed - 1) / 2147483646; };
   const pick = a => a[Math.floor(rnd() * a.length)];
   const out = [];
+  const LESSONS = ['The 15m close decides, not the story.', 'Waited for the CISD instead of anticipating it. Keep doing that.',
+    'Against yesterday’s flow needs more proof than one SMT.', 'Took the partial at 2R and let the runner work.', 'Stop stays where it was placed.',
+    'No 9:30 delivery means no trade. Walked away on time.', 'Checked the feed before reading 7H candles.'];
+  // pre/post-session read; bias is right more often when it goes with yesterday's flow
+  const session = (bias, good) => {
+    const prevDir = rnd() < 0.5 ? 'up' : 'down';
+    const x = { prevDir, prevType: pick(['manip', 'manip', 'closure', 'inside']), prevClose: pick(['upper', 'middle', 'lower']), bias, conf: 1 + Math.floor(rnd() * 3) };
+    x.flow = flowOf(x);
+    const pRight = (x.flow === 'against' ? 0.42 : 0.7) + (x.conf - 2) * 0.08 + (good ? 0.12 : -0.12);
+    const ok = rnd() < pRight;
+    const exp = pick(['18', 'london', 'london', 'nyrev']);
+    Object.assign(x, {
+      profile: exp, smt: [pick(['ES', 'NQ', 'YM', 'None'])], inval: String(30000 + Math.round(rnd() * 900)),
+      planEntry: '5m CISD after 9:30', planStop: 'Above the manipulation', planPartial: '2R', planTarget: bias === 'bear' ? 'PDL' : 'PDH',
+      actual: ok && rnd() < 0.8 ? exp : pick(['18', 'london', 'nyrev', 'other']), biasOk: ok ? 'right' : 'wrong',
+      failSign: ok ? '' : pick(['15m closed through the invalidation', 'Correlated index confirmed the high', '9:30 expanded the wrong way']),
+      failTime: ok ? '' : pick(['08:45', '09:35', '09:50', '10:15']), lesson: rnd() < 0.7 ? pick(LESSONS) : '',
+    });
+    return x;
+  };
   const d = new Date(); d.setDate(d.getDate() - 84);
   while (out.length < 34 && isoDay(d) < today()) {
     d.setDate(d.getDate() + 1);
@@ -1039,7 +1248,7 @@ function sampleData() {
     const ds = isoDay(d);
     if (rnd() < 0.16) {
       const missed = rnd() < 0.2;
-      out.push({ id: uid(), sample: true, kind: 'notrade', acct: 'backtest', date: ds, time: '', bias: 'none', profile: 'other', reasons: [pick(NOTRADE_REASONS)], missed, review: {}, notes: 'Sample entry.', images: [], mistakes: [], checks: {}, created: Date.now() });
+      out.push({ id: uid(), sample: true, kind: 'notrade', acct: 'backtest', date: ds, time: '', ...session(pick(['bull', 'bear', 'none']), !missed), followed: !missed, reasons: [pick(NOTRADE_REASONS)], missed, review: {}, notes: 'Sample entry.', images: [], mistakes: [], checks: {}, created: Date.now() });
       continue;
     }
     const dir = rnd() < 0.6 ? 'long' : 'short';
@@ -1053,7 +1262,7 @@ function sampleData() {
     const mm = hh === 9 ? 31 + Math.floor(rnd() * 28) : Math.floor(rnd() * 59);
     out.push({
       id: uid(), sample: true, kind: 'trade', acct: 'backtest', date: ds, time: `${pad2(hh)}:${pad2(mm)}`,
-      instrument: 'US100.cash', dir, bias: dir === 'long' ? 'bull' : 'bear', profile: pick(['london', 'london', '18', 'nyrev', 'nymanip']),
+      instrument: 'US100.cash', dir, ...session(dir === 'long' ? 'bull' : 'bear', R > 0),
       entry, stop: dir === 'long' ? entry - stopPts : entry + stopPts, target: dir === 'long' ? entry + 2 * stopPts : entry - 2 * stopPts,
       exit: +(dir === 'long' ? entry + R * stopPts : entry - R * stopPts).toFixed(2), size: +(50 / stopPts).toFixed(2), riskUsd: 50, pnl: '', rOverride: '',
       checks: { bias: true, cisd15: true, sig5: rnd() < 0.9, room: true, open: rnd() < 0.75 }, followed, takeAgain: followed ? 'yes' : 'no',
