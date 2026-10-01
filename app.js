@@ -31,14 +31,23 @@ const profLabel = k => PROFILES[k] || { nymanip: 'NY manipulation' }[k] || '';
 const BIAS = { bull: 'Bullish', bear: 'Bearish', none: 'Neutral' };
 const PREV_DIR = { up: 'Up-close', down: 'Down-close' };
 const PREV_TYPE = { manip: 'Manipulation', closure: 'Closure through', inside: 'Inside / neither' };
+const PREV_SIDE = { high: 'The high', low: 'The low' };
 const PREV_CLOSE = { upper: 'Upper third', middle: 'Middle', lower: 'Lower third' };
 const FLOW = { with: 'With yesterday', against: 'Against yesterday' };
 const SMT_OPTS = ['ES', 'NQ', 'YM', 'None'];
-// yesterday's close direction vs today's bias
-const flowOf = d => !d.prevDir || !d.bias || d.bias === 'none' ? '' : (d.bias === 'bull') === (d.prevDir === 'up') ? 'with' : 'against';
+// Order flow comes from how yesterday engaged its level, not from the candle colour:
+// a manipulation trades away from the level, a closure through continues past it, an inside day gives none.
+const flowDir = d => {
+  if (d.prevType === 'inside') return '';
+  if (d.prevType && d.prevSide) return (d.prevType === 'manip') === (d.prevSide === 'high') ? 'bear' : 'bull';
+  return d.prevType || !d.prevDir ? '' : d.prevDir === 'up' ? 'bull' : 'bear';   // entries logged before the level was recorded
+};
+const flowOf = d => { const f = flowDir(d); return !f || !d.bias || d.bias === 'none' ? '' : d.bias === f ? 'with' : 'against'; };
+const flowWhy = d => d.prevType === 'inside' ? 'An inside day gives no order flow'
+  : d.prevType && d.prevSide ? `${PREV_TYPE[d.prevType]} ${d.prevType === 'manip' ? 'of' : ''} ${PREV_SIDE[d.prevSide].toLowerCase()} is ${BIAS[flowDir(d)].toLowerCase()} flow`.replace(/\s+/g, ' ') : '';
 const has = v => v != null && String(v).trim() !== '';
 const PRE_DONE = [
-  d => d.prevDir && d.prevType && d.prevClose, d => d.bias && d.conf, d => d.flow, d => d.profile,
+  d => d.prevDir && d.prevType && d.prevClose && (d.prevType === 'inside' || d.prevSide), d => d.bias && d.conf, d => d.flow, d => d.profile,
   d => (d.smt || []).length, d => has(d.inval), d => has(d.planEntry) && has(d.planStop) && has(d.planTarget),
 ];
 const POST_DONE = [d => d.actual, d => d.biasOk, d => d.followed === true || d.followed === false, d => has(d.lesson)];
@@ -901,7 +910,8 @@ function numbered(rows) {
 }
 function preBlock(t) {
   const n = countDone(PRE_DONE, t);
-  const prev = [PREV_DIR[t.prevDir], PREV_TYPE[t.prevType], t.prevClose && 'closed in the ' + PREV_CLOSE[t.prevClose].toLowerCase()].filter(Boolean).join(' · ');
+  const side = t.prevType !== 'inside' && t.prevSide ? (t.prevType === 'manip' ? ' of ' : ' ') + PREV_SIDE[t.prevSide].toLowerCase() : '';
+  const prev = [PREV_DIR[t.prevDir], t.prevType && PREV_TYPE[t.prevType] + side, t.prevClose && 'closed in the ' + PREV_CLOSE[t.prevClose].toLowerCase()].filter(Boolean).join(' · ');
   const smt = (t.smt || []).length ? (t.smt.includes('None') ? 'No SMT' : t.smt.join(', ') + ' failed') : '';
   const plan = [['Entry trigger', t.planEntry], ['Stop', t.planStop], ['Partial', t.planPartial], ['Target', t.planTarget]].filter(([, v]) => has(v));
   return `<div class="card-h"><h2>Before 9:30</h2><span class="count mono ${n === 7 ? 'pos' : 'muted'}">${n}/7</span></div>` + numbered([
@@ -961,7 +971,7 @@ async function viewForm(id) {
   const st = S.settings;
   const d = existing ? structuredClone(existing) : {
     id: uid(), kind: 'trade', acct: prefs.get('lastAcct', 'backtest'), date: today(), time: '',
-    instrument: prefs.get('lastInstr', (st.instruments[0] || {}).name || ''), dir: 'long', bias: '', profile: '', prevDir: '', prevType: '', prevClose: '', conf: null, flow: '', smt: [], inval: '',
+    instrument: prefs.get('lastInstr', (st.instruments[0] || {}).name || ''), dir: 'long', bias: '', profile: '', prevDir: '', prevType: '', prevSide: '', prevClose: '', conf: null, flow: '', smt: [], inval: '',
     planEntry: '', planStop: '', planPartial: '', planTarget: '', actual: '', biasOk: '', failSign: '', failTime: '', lesson: '',
     entry: '', stop: '', target: '', exit: '', size: '', riskUsd: +(st.accountSize * st.riskPct / 100).toFixed(2), pnl: '', rOverride: '',
     checks: {}, followed: null, takeAgain: '', emotion: 3, mistakes: [], reasons: [], missed: false, review: {}, notes: '', images: [], created: Date.now(),
@@ -995,6 +1005,7 @@ async function viewForm(id) {
           ${qrow(1, "Yesterday’s daily", `<div class="q-subs">
             <div class="q-sub"><span>Candle</span>${seg('prevDir', Object.entries(PREV_DIR), d.prevDir)}</div>
             <div class="q-sub"><span>Type</span>${seg('prevType', Object.entries(PREV_TYPE), d.prevType)}</div>
+            <div class="q-sub" id="q-side" ${d.prevType === 'inside' ? 'hidden' : ''}><span>Level engaged</span>${seg('prevSide', Object.entries(PREV_SIDE), d.prevSide)}</div>
             <div class="q-sub"><span>Closed in the</span>${seg('prevClose', Object.entries(PREV_CLOSE), d.prevClose)}</div></div>`)}
           ${qrow(2, 'Daily bias', `<div class="q-subs">
             <div class="q-sub"><span>Direction</span>${seg('bias', Object.entries(BIAS), d.bias, 'pn')}</div>
@@ -1092,8 +1103,8 @@ async function viewForm(id) {
     const pn = countDone(PRE_DONE, d), qn = countDone(POST_DONE, d);
     $('#pre-n').textContent = pn + '/7'; $('#pre-n').classList.toggle('pos', pn === 7);
     $('#post-n').textContent = qn + '/4'; $('#post-n').classList.toggle('pos', qn === 4);
-    const sug = flowOf(d);
-    $('#flow-hint').textContent = sug && sug !== d.flow ? `Candle direction suggests “${FLOW[sug].toLowerCase()}”` : '';
+    const sug = flowOf(d), why = flowWhy(d);
+    $('#flow-hint').textContent = sug && sug !== d.flow ? `${why || 'Candle direction'} → “${FLOW[sug].toLowerCase()}”` : !sug && why ? why : '';
   };
   const renderThumbs = () => {
     $('#thumbs').innerHTML = form.imgs.map((im, i) => `<figure class="thumb"><img src="${im.url}" alt="${esc(im.label)}">
@@ -1112,7 +1123,8 @@ async function viewForm(id) {
     else if (k === 'emotion' || k === 'conf') d[k] = Number(v);
     else d[k] = v;
     if (k === 'flow') d.flowSet = true;
-    if ((k === 'bias' || k === 'prevDir') && !d.flowSet) {
+    if (k === 'prevType') $('#q-side').hidden = v === 'inside';
+    if (['bias', 'prevDir', 'prevType', 'prevSide'].includes(k) && !d.flowSet) {
       d.flow = flowOf(d);
       $$('[data-seg="flow"] button', f).forEach(x => x.setAttribute('aria-pressed', String(x.dataset.v === d.flow)));
     }
@@ -1445,7 +1457,7 @@ async function exportJSON() {
 }
 
 function exportCSV() {
-  const cols = ['date', 'time', 'kind', 'acct', 'instrument', 'dir', 'entryTf', 'prevDir', 'prevType', 'prevClose', 'bias', 'conf', 'flow', 'profile', 'smt', 'inval', 'planEntry', 'planStop', 'planPartial', 'planTarget', 'actual', 'biasOk', 'failSign', 'failTime', 'lesson', 'entry', 'stop', 'target', 'exit', 'size', 'riskUsd', 'R', 'pnlUsd', 'followed', 'takeAgain', 'emotion', 'mistakes', 'reasons', 'missed', 'notes'];
+  const cols = ['date', 'time', 'kind', 'acct', 'instrument', 'dir', 'entryTf', 'prevDir', 'prevType', 'prevSide', 'prevClose', 'bias', 'conf', 'flow', 'profile', 'smt', 'inval', 'planEntry', 'planStop', 'planPartial', 'planTarget', 'actual', 'biasOk', 'failSign', 'failTime', 'lesson', 'entry', 'stop', 'target', 'exit', 'size', 'riskUsd', 'R', 'pnlUsd', 'followed', 'takeAgain', 'emotion', 'mistakes', 'reasons', 'missed', 'notes'];
   const q = v => { const s = v == null ? '' : String(v); return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
   const rows = [...S.trades].sort(byTime).map(t => cols.map(c => {
     if (c === 'R') { const r = tradeR(t); return r == null ? '' : r.toFixed(3); }
@@ -1488,7 +1500,7 @@ function sampleData() {
   // pre/post-session read; bias is right more often when it goes with yesterday's flow
   const session = (bias, good) => {
     const prevDir = rnd() < 0.5 ? 'up' : 'down';
-    const x = { prevDir, prevType: pick(['manip', 'manip', 'closure', 'inside']), prevClose: pick(['upper', 'middle', 'lower']), bias, conf: 1 + Math.floor(rnd() * 3) };
+    const x = { prevDir, prevType: pick(['manip', 'manip', 'closure', 'inside']), prevSide: pick(['high', 'low']), prevClose: pick(['upper', 'middle', 'lower']), bias, conf: 1 + Math.floor(rnd() * 3) };
     x.flow = flowOf(x);
     const pRight = (x.flow === 'against' ? 0.42 : 0.7) + (x.conf - 2) * 0.08 + (good ? 0.12 : -0.12);
     const ok = rnd() < pRight;

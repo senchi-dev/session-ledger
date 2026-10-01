@@ -369,6 +369,7 @@ input::placeholder, textarea::placeholder { color: var(--muted); opacity: .8; }
 .q-ctrl .hint { font-size: 12px; color: var(--warn); }
 .q-subs { display: flex; flex-wrap: wrap; gap: 12px 18px; }
 .q-sub { display: grid; gap: 6px; }
+.q-sub[hidden] { display: none; }
 .q-sub > span { font-size: 11.5px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
 .q-in { height: 36px; border: 1px solid var(--rule-2); background: var(--surface); border-radius: 9px; padding: 0 11px; width: min(100%, 420px); }
 .q-in:focus { outline: none; border-color: var(--ink); box-shadow: 0 0 0 3px color-mix(in srgb, var(--ink) 12%, transparent); }
