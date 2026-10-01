@@ -1,7 +1,7 @@
 'use strict';
 /* Session Ledger — a local-first trading journal.
-   All trades and screenshots live in this browser (IndexedDB). Nothing is uploaded anywhere.
-   Back up regularly from Settings → Export full backup. */
+   Trades and screenshots are written to this browser first (IndexedDB), so it works offline.
+   When you sign in from Settings, every change is also copied to your own Supabase database. */
 
 // ───────────────────────── helpers ─────────────────────────
 const $ = (s, r = document) => r.querySelector(s);
@@ -21,7 +21,7 @@ const WD = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const weekday = d => d ? WD[new Date(d + 'T12:00:00').getDay()] : '';
 const fmtDate = d => d ? new Date(d + 'T12:00:00').toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) : '—';
 const byTime = (a, b) => ((a.date || '') + (a.time || '')).localeCompare((b.date || '') + (b.time || ''));
-const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
+const plural = (n, w) => `${n} ${n === 1 ? w : /[^aeiou]y$/.test(w) ? w.slice(0, -1) + 'ies' : w + 's'}`;
 
 // ───────────────────────── vocabulary ─────────────────────────
 const ACCTS = { backtest: 'Backtest', demo: 'Demo', live: 'Live' };
@@ -79,10 +79,12 @@ const DB = (() => {
       r.onerror = () => rej(r.error);
     }),
     all: s => req(store(s).getAll()),
+    keys: s => req(store(s).getAllKeys()),
     get: (s, k) => req(store(s).get(k)),
-    put: (s, v) => req(store(s, 'readwrite').put(v)),
-    del: (s, k) => req(store(s, 'readwrite').delete(k)),
-    clear: s => req(store(s, 'readwrite').clear()),
+    // quiet = true writes locally without queueing the change for the cloud copy
+    put: async (s, v, quiet) => { await req(store(s, 'readwrite').put(v)); if (!quiet) Cloud.mark(s, s === 'meta' ? v.k : v.id, 'put'); },
+    del: async (s, k, quiet) => { await req(store(s, 'readwrite').delete(k)); if (!quiet) Cloud.mark(s, k, 'del'); },
+    async clear(s) { for (const k of await this.keys(s)) await this.del(s, k); },
     imagesOf: id => req(store('images').index('tradeId').getAll(id)),
   };
 })();
@@ -113,6 +115,183 @@ async function loadAll() {
   S.settings = Object.assign({}, DEFAULT_SETTINGS, m ? m.v : {});
 }
 const saveSettings = () => DB.put('meta', { k: 'settings', v: S.settings });
+
+// ───────────────────────── cloud copy ─────────────────────────
+// The publishable key is meant to be public: row-level security limits every row to its owner.
+const CLOUD_CFG = { url: 'https://cgvmysnxdawyjzcleito.supabase.co', key: 'sb_publishable_CZtlCTLeeBsMFg9HZjAiig_rsJDJhwp', bucket: 'ledger-shots' };
+
+const Cloud = (() => {
+  let sb = null, user = null, busy = false, again = false, timer = null, error = '';
+  let outbox = {};                                   // 'trades:<id>' | 'images:<id>' | 'settings' → { op, ts }
+  let st = { uid: null, seeded: false, cursor: {}, lastSync: null };
+  const configured = () => !!(CLOUD_CFG.url && CLOUD_CFG.key && window.supabase);
+  const saveOutbox = () => DB.put('meta', { k: 'outbox', v: outbox }, true);
+  const saveState = () => DB.put('meta', { k: 'cloud', v: st }, true);
+  const path = id => `${user.id}/${id}`;
+  const ok = r => { if (r.error) throw r.error; return r.data; };
+  const status = () => ({ configured: configured(), user, busy, error, pending: Object.keys(outbox).length, lastSync: st.lastSync, online: navigator.onLine });
+
+  function paint() {
+    const c = status(), pill = $('#sync');
+    if (pill) {
+      pill.hidden = !c.configured;
+      const state = !c.user ? 'off' : c.busy ? 'busy' : (c.error || c.pending) ? 'wait' : 'ok';
+      pill.dataset.state = state;
+      const label = { off: 'Not synced', busy: 'Syncing', wait: `${c.pending} waiting`, ok: 'Synced' }[state];
+      pill.innerHTML = `<i aria-hidden="true"></i><span>${label}</span>`;
+      pill.title = cloudLine(c);
+    }
+    const line = $('#cloud-status');
+    if (line && c.user) line.textContent = cloudLine(c);
+  }
+
+  async function fetchSince(table, since) {
+    const out = [];
+    for (let from = 0; ; from += 1000) {
+      let q = sb.from(table).select('*');
+      if (since) q = q.gt('updated_at', since);
+      const rows = ok(await q.order('updated_at').range(from, from + 999));
+      out.push(...rows);
+      if (rows.length < 1000) break;
+    }
+    if (out.length) st.cursor[table] = out[out.length - 1].updated_at;
+    return out;
+  }
+
+  // Remote → local. A change still waiting in the outbox wins over the remote copy.
+  async function pull() {
+    const seen = { trades: new Set(), images: new Set(), settings: false };
+    let changed = false;
+    for (const r of await fetchSince('ledger_trades', st.cursor.ledger_trades)) {
+      seen.trades.add(r.id);
+      if (outbox['trades:' + r.id]) continue;
+      if (r.deleted) await DB.del('trades', r.id, true); else await DB.put('trades', r.data, true);
+      changed = true;
+    }
+    for (const r of await fetchSince('ledger_images', st.cursor.ledger_images)) {
+      seen.images.add(r.id);
+      if (outbox['images:' + r.id]) continue;
+      if (r.deleted) { await DB.del('images', r.id, true); continue; }
+      const local = await DB.get('images', r.id);
+      if (local && local.label === r.label) continue;
+      const blob = local ? local.blob : ok(await sb.storage.from(CLOUD_CFG.bucket).download(path(r.id)));
+      await DB.put('images', { id: r.id, tradeId: r.trade_id, label: r.label, created: r.created, blob }, true);
+      changed = true;
+    }
+    for (const r of await fetchSince('ledger_settings', st.cursor.ledger_settings)) {
+      seen.settings = true;
+      if (outbox.settings) continue;
+      S.settings = Object.assign({}, DEFAULT_SETTINGS, r.data);
+      await DB.put('meta', { k: 'settings', v: S.settings }, true);
+      changed = true;
+    }
+    if (changed) {
+      S.trades = await DB.all('trades');
+      if (!/^#\/?(new|edit)/.test(location.hash)) route();   // never redraw over a form being filled in
+    }
+    return seen;
+  }
+
+  // Local → remote, one queued change at a time; a change is dropped from the queue only once it is stored.
+  async function push() {
+    for (const [key, item] of Object.entries(outbox)) {
+      const cut = key.indexOf(':'), store = cut < 0 ? key : key.slice(0, cut), id = key.slice(cut + 1);
+      const row = { user_id: user.id, id };
+      if (store === 'settings') {
+        ok(await sb.from('ledger_settings').upsert({ user_id: user.id, data: S.settings }, { onConflict: 'user_id' }));
+      } else if (store === 'trades') {
+        const t = item.op === 'del' ? null : await DB.get('trades', id);
+        if (item.op === 'del' || !t) ok(await sb.from('ledger_trades').upsert({ ...row, data: null, deleted: true }, { onConflict: 'user_id,id' }));
+        else if (!t.sample) ok(await sb.from('ledger_trades').upsert({ ...row, data: t, deleted: false }, { onConflict: 'user_id,id' }));
+      } else if (store === 'images') {
+        const im = item.op === 'del' ? null : await DB.get('images', id);
+        if (im) {
+          ok(await sb.storage.from(CLOUD_CFG.bucket).upload(path(id), im.blob, { upsert: true, contentType: im.blob.type || 'image/jpeg' }));
+          ok(await sb.from('ledger_images').upsert({ ...row, trade_id: im.tradeId, label: im.label, created: im.created, deleted: false }, { onConflict: 'user_id,id' }));
+        } else {
+          await sb.storage.from(CLOUD_CFG.bucket).remove([path(id)]);
+          ok(await sb.from('ledger_images').upsert({ ...row, deleted: true }, { onConflict: 'user_id,id' }));
+        }
+      }
+      if (outbox[key] && outbox[key].ts === item.ts) delete outbox[key];
+      await saveOutbox();
+      paint();
+    }
+  }
+
+  // First sync on this browser: take what the database has, then queue whatever only exists here.
+  async function seed() {
+    const seen = await pull(), ts = Date.now();
+    for (const t of await DB.all('trades')) if (!t.sample && !seen.trades.has(t.id)) outbox['trades:' + t.id] = { op: 'put', ts };
+    for (const id of await DB.keys('images')) if (!seen.images.has(id)) outbox['images:' + id] = { op: 'put', ts };
+    if (!seen.settings) outbox.settings = { op: 'put', ts };
+    st.seeded = true;
+    await saveOutbox(); await saveState();
+  }
+
+  async function sync() {
+    if (!sb || !user) return;
+    if (!navigator.onLine) return paint();
+    if (busy) { again = true; return; }
+    busy = true; error = ''; paint();
+    try {
+      if (st.uid !== user.id) { st = { uid: user.id, seeded: false, cursor: {}, lastSync: null }; outbox = {}; }
+      if (!st.seeded) await seed();
+      await push();
+      await pull();
+      st.lastSync = Date.now();
+      await saveState();
+    } catch (e) {
+      console.error('Cloud sync', e);
+      error = e.message || String(e);
+    } finally {
+      busy = false; paint();
+      if (again) { again = false; schedule(); }
+    }
+  }
+  const schedule = () => { clearTimeout(timer); timer = setTimeout(sync, 1200); };
+
+  return {
+    status, sync,
+    async init() {
+      if (!configured()) return;
+      outbox = ((await DB.get('meta', 'outbox')) || {}).v || {};
+      st = Object.assign(st, ((await DB.get('meta', 'cloud')) || {}).v);
+      sb = window.supabase.createClient(CLOUD_CFG.url, CLOUD_CFG.key, { auth: { flowType: 'pkce' } });
+      sb.auth.onAuthStateChange((ev, session) => {
+        const was = user && user.id;
+        user = session ? session.user : null;
+        paint();
+        if (location.hash === '#settings' && was !== (user && user.id)) viewSettings();
+        if (user && (ev === 'SIGNED_IN' || ev === 'INITIAL_SESSION')) setTimeout(sync, 0);   // never call the client from inside its own callback
+      });
+      window.addEventListener('online', sync);
+      window.addEventListener('offline', paint);
+      document.addEventListener('visibilitychange', () => { if (!document.hidden && Date.now() - (st.lastSync || 0) > 60000) sync(); });
+      paint();
+    },
+    // Called by DB on every local write. Before the first sync nothing is queued: seed() covers it.
+    mark(store, id, op) {
+      if (!configured() || !st.seeded) return;
+      const key = store === 'meta' ? (id === 'settings' ? 'settings' : null) : `${store}:${id}`;
+      if (!key) return;
+      outbox[key] = { op, ts: Date.now() };
+      saveOutbox(); paint(); schedule();
+    },
+    signIn: email => sb.auth.signInWithOtp({ email, options: { emailRedirectTo: location.origin + location.pathname } }),
+    signOut: () => sb.auth.signOut(),
+  };
+})();
+
+function cloudLine(c) {
+  if (!c.user) return 'Not signed in. Entries are kept in this browser only.';
+  if (c.busy) return 'Syncing…';
+  const wait = c.pending ? `${plural(c.pending, 'change')} waiting` : '';
+  if (c.error) return `Sync failed: ${c.error}${wait ? ' · ' + wait : ''}`;
+  if (!c.online) return `Offline${wait ? ' · ' + wait : ''}`;
+  if (wait) return wait;
+  return c.lastSync ? `Up to date · last synced ${new Date(c.lastSync).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}` : 'Not synced yet';
+}
 
 // ───────────────────────── maths ─────────────────────────
 function tradeR(t) {
@@ -272,7 +451,7 @@ function bindSampleBanner(rerender) {
   const b = $('#rm-sample');
   if (!b) return;
   b.addEventListener('click', async () => {
-    for (const t of S.trades.filter(x => x.sample)) await DB.del('trades', t.id);
+    for (const t of S.trades.filter(x => x.sample)) await DB.del('trades', t.id, true);
     S.trades = S.trades.filter(x => !x.sample);
     toast('Sample data removed');
     rerender();
@@ -1150,6 +1329,7 @@ async function viewSettings() {
     const est = await navigator.storage.estimate();
     usage = `${(est.usage / 1048576).toFixed(1)} MB used`;
   }
+  const cloud = Cloud.status();
   app.innerHTML = `
   <header class="page-head"><div><h1>Settings</h1><p class="sub">${plural(S.trades.length, 'entry')} stored in this browser${usage ? ' · ' + usage : ''}</p></div></header>
   <section class="row even">
@@ -1169,9 +1349,10 @@ async function viewSettings() {
       <div class="set-actions"><button type="button" class="btn" id="add-inst">Add instrument</button></div>
       <p class="small muted" style="margin:12px 0 0">US100.cash at FTMO: contract size 1, so $1 per point per lot.</p>
     </article>
+    ${cloudCard(cloud)}
     <article class="card">
       <h2 style="margin-bottom:12px">Backup</h2>
-      <p class="set-note">Your journal lives only in this browser. Clearing site data or switching device loses it. A full backup includes your screenshots.</p>
+      <p class="set-note">${cloud.user ? 'Your journal is copied to your database. A full backup file is a second copy you hold yourself, screenshots included.' : 'Your journal lives only in this browser. Clearing site data or switching device loses it. A full backup includes your screenshots.'}</p>
       <p class="small muted" style="margin:0">Last backup: ${st.lastBackup ? new Date(st.lastBackup).toLocaleString('en-GB') : 'never'}${persisted === true ? ' · persistent storage on' : ''}</p>
       <div class="set-actions">
         <button type="button" class="btn primary" id="exp-json">Export full backup</button>
@@ -1182,7 +1363,7 @@ async function viewSettings() {
     </article>
     <article class="card">
       <h2 style="margin-bottom:12px">Erase everything</h2>
-      <p class="set-note">Deletes every entry and screenshot from this browser. Export a backup first.</p>
+      <p class="set-note">Deletes every entry and screenshot from this browser${cloud.user ? ' and from your database' : ''}. Export a backup first.</p>
       <div class="set-actions"><input class="search" id="erase-txt" placeholder="Type ERASE to confirm" aria-label="Type ERASE to confirm"><button type="button" class="btn danger" id="erase" disabled>Erase</button></div>
     </article>
   </section>`;
@@ -1202,6 +1383,19 @@ async function viewSettings() {
   $('#exp-json').addEventListener('click', exportJSON);
   $('#exp-csv').addEventListener('click', exportCSV);
   $('#imp').addEventListener('change', async e => { const file = e.target.files[0]; if (file) await importJSON(file); e.target.value = ''; });
+  const cin = $('#cloud-in');
+  if (cin) cin.addEventListener('submit', async e => {
+    e.preventDefault();
+    const btn = $('button', cin), line = $('#cloud-status');
+    btn.disabled = true; line.textContent = 'Sending…';
+    const { error } = await Cloud.signIn($('#cloud-email').value.trim());
+    btn.disabled = false;
+    line.textContent = error ? 'Could not send the link: ' + error.message : 'Link sent. Open it in this same browser to finish signing in.';
+  });
+  const csync = $('#cloud-sync');
+  if (csync) csync.addEventListener('click', () => Cloud.sync());
+  const cout = $('#cloud-out');
+  if (cout) cout.addEventListener('click', async () => { await Cloud.signOut(); toast('Signed out. Entries stay in this browser.'); });
   const p = $('#persist');
   if (p) p.addEventListener('click', async () => { const ok = await navigator.storage.persist(); toast(ok ? 'Storage protected' : 'The browser declined; keep exporting backups'); viewSettings(); });
   const et = $('#erase-txt'), eb = $('#erase');
@@ -1212,6 +1406,21 @@ async function viewSettings() {
     toast('Everything erased');
     location.hash = '#dashboard';
   });
+}
+function cloudCard(c) {
+  if (!c.configured) return '';
+  if (!c.user) return `<article class="card">
+      <h2 style="margin-bottom:12px">Cloud sync</h2>
+      <p class="set-note">Sign in to keep a copy of every entry and screenshot in your own database, and to open the journal on another device. Entries still save in this browser first, so it works offline.</p>
+      <form class="set-actions" id="cloud-in"><input class="search" type="email" id="cloud-email" placeholder="you@example.com" autocomplete="email" required aria-label="Email address"><button class="btn primary">Email me a sign-in link</button></form>
+      <p class="small muted" id="cloud-status" style="margin:12px 0 0"></p>
+    </article>`;
+  return `<article class="card">
+      <div class="card-h"><h2>Cloud sync</h2><span class="muted small">${esc(c.user.email)}</span></div>
+      <p class="set-note">Every entry saves in this browser first, then copies to your database. Only your account can read it.</p>
+      <p class="small muted" id="cloud-status" style="margin:0">${esc(cloudLine(c))}</p>
+      <div class="set-actions"><button type="button" class="btn primary" id="cloud-sync">Sync now</button><button type="button" class="btn ghost" id="cloud-out">Sign out</button></div>
+    </article>`;
 }
 const setField = (k, label, v) => `<label class="fld"><span>${esc(label)}</span><input type="number" step="any" data-set="${k}" value="${esc(v)}"></label>`;
 
@@ -1383,4 +1592,5 @@ document.addEventListener('keydown', e => {
   if (new URLSearchParams(location.search).has('demo') && !S.trades.length) await loadSample();
   window.addEventListener('hashchange', route);
   route();
+  Cloud.init().catch(e => console.error('Cloud init', e));
 })();

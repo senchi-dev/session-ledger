@@ -4,13 +4,13 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Session Ledger</title>
-<meta name="description" content="A local-first trading journal: log trades, attach chart evidence, and track R-based statistics.">
+<meta name="description" content="A trading journal that works offline and syncs to your own database: log trades, attach chart evidence, and track R-based statistics.">
 <meta name="robots" content="noindex">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%23121513'/%3E%3Cline x1='11' y1='7' x2='11' y2='25' stroke='%23F3F4F1' stroke-width='1.5'/%3E%3Crect x='8' y='11' width='6' height='9' rx='1' fill='%23F3F4F1'/%3E%3Cline x1='21' y1='5' x2='21' y2='21' stroke='%2334C28A' stroke-width='1.5'/%3E%3Crect x='18' y='8' width='6' height='9' rx='1' fill='%2334C28A'/%3E%3C/svg%3E">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap">
-<link rel="stylesheet" href="style.css?v=7">
+<link rel="stylesheet" href="style.css?v=8">
 </head>
 <body>
 <header class="top">
@@ -29,6 +29,7 @@
       <a href="#settings" data-nav="settings">Settings</a>
     </nav>
     <div class="top-r">
+      <a class="sync" id="sync" href="#settings" hidden></a>
       <button class="icon-btn" id="theme" type="button" aria-label="Switch theme" title="Theme"></button>
       <a class="btn primary" href="#new" title="New entry (N)"><span aria-hidden="true">+</span> New entry</a>
     </div>
@@ -46,6 +47,7 @@
   <button class="lb-next icon-btn" type="button" aria-label="Next screenshot">›</button>
 </div>
 
-<script src="app.js?v=7"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="app.js?v=8"></script>
 </body>
 </html>

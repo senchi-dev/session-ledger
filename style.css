@@ -60,6 +60,16 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .nav a:hover { color: var(--ink); background: var(--surface-2); }
 .nav a[aria-current="page"] { color: var(--ink); background: var(--surface); box-shadow: var(--shadow); border: 1px solid var(--rule); padding: 6px 11px; }
 .top-r { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+.sync { display: inline-flex; align-items: center; gap: 6px; padding: 5px 9px; border-radius: 999px; font-size: 12px; color: var(--muted); text-decoration: none; white-space: nowrap; }
+.sync:hover { background: var(--surface-2); color: var(--ink); }
+.sync[hidden] { display: none; }
+.sync i { width: 7px; height: 7px; border-radius: 50%; background: var(--rule-2); }
+.sync[data-state="ok"] i { background: var(--pos); }
+.sync[data-state="wait"] i { background: var(--warn); }
+.sync[data-state="busy"] i { background: var(--pos); animation: sync-pulse 1s ease-in-out infinite; }
+@keyframes sync-pulse { 50% { opacity: .25; } }
+@media (max-width: 760px) { .sync span { display: none; } }
+@media (prefers-reduced-motion: reduce) { .sync[data-state="busy"] i { animation: none; } }
 @media (max-width: 720px) {
   .top-in { height: auto; flex-wrap: wrap; padding: 10px 0; gap: 10px; }
   .brand span { display: none; }
