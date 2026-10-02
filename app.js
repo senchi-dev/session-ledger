@@ -41,7 +41,7 @@ const LOG_HAS_DIR = k => k === 'read' || k === 'flip';
 const READ_REL = ['With the initial read', 'After the read flipped', 'No initial bias'];
 const has = v => v != null && String(v).trim() !== '';
 const PRE_DONE = [
-  d => d.prevDir && d.prevType && d.prevClose && (d.prevType === 'inside' || d.prevSide), d => d.bias && d.conf, d => d.profile,
+  d => d.prevDir && d.prevType && d.prevClose && (d.prevType === 'inside' || d.prevSide), d => d.bias, d => d.profile,
   d => (d.smt || []).length, d => has(d.inval), d => has(d.planEntry) && has(d.planStop) && has(d.planTarget),
 ];
 const POST_DONE = [d => d.actual, d => d.biasOk, d => d.followed === true || d.followed === false, d => has(d.lesson)];
@@ -409,7 +409,6 @@ function readStats(list) {
     profile: rate(called, t => t.profile === t.actual),
     plan: rate(rated, t => t.followed),
     byPrev: rateBy(graded, t => t.prevType, Object.keys(PREV_TYPE), k => PREV_TYPE[k]),
-    byConf: rateBy(graded, t => t.conf ? String(t.conf) : null, ['3', '2', '1'], k => `Confidence ${k}/3`),
     byProfile: rateBy(called, t => t.profile, PROFILE_ORDER, profLabel, t => t.profile === t.actual),
     lessons: [...list].filter(t => has(t.lesson)).sort((a, b) => byTime(b, a)).slice(0, 6),
   };
@@ -522,8 +521,7 @@ function viewDashboard() {
 
   <section class="row three">
     <article class="card">${readCard(rd)}</article>
-    <article class="card">${rateBars('Bias accuracy by yesterday’s candle', rd.byPrev, 'which daily setups do you read best?')}
-      <div class="rule-gap"></div>${rateBars('By confidence', rd.byConf)}</article>
+    <article class="card">${rateBars('Bias accuracy by yesterday’s candle', rd.byPrev, 'which daily setups do you read best?')}</article>
     <article class="card">${rateBars('Profile called correctly', rd.byProfile, 'expected profile vs what happened')}</article>
   </section>
 
@@ -932,7 +930,7 @@ function preBlock(t) {
   const plan = [['Entry trigger', t.planEntry], ['Stop', t.planStop], ['Partial', t.planPartial], ['Target', t.planTarget]].filter(([, v]) => has(v));
   return `<div class="card-h"><h2>Before 9:30</h2><span class="count mono ${n === 6 ? 'pos' : 'muted'}">${n}/6</span></div>` + numbered([
     ["Yesterday's daily", esc(prev)],
-    ['Daily bias', t.bias ? `<span class="${t.bias === 'bull' ? 'pos' : t.bias === 'bear' ? 'neg' : ''}">${esc(BIAS[t.bias])}</span>${t.conf ? ` <span class="muted">· confidence ${t.conf}/3</span>` : ''}` : ''],
+    ['Daily bias', t.bias ? `<span class="${t.bias === 'bull' ? 'pos' : t.bias === 'bear' ? 'neg' : ''}">${esc(BIAS[t.bias])}</span>` : ''],
     ['Expected profile', esc(profLabel(t.profile))],
     ['SMT at the key level', esc(smt)],
     ['Invalidation', has(t.inval) ? `<span class="mono">${esc(t.inval)}</span>` : ''],
@@ -1005,7 +1003,7 @@ async function viewForm(id) {
   const st = S.settings;
   const d = existing ? structuredClone(existing) : {
     id: uid(), kind: 'trade', acct: prefs.get('lastAcct', 'backtest'), date: today(), time: '',
-    instrument: prefs.get('lastInstr', (st.instruments[0] || {}).name || ''), dir: 'long', bias: '', profile: '', prevDir: '', prevType: '', prevSide: '', prevClose: '', conf: null, smt: [], inval: '',
+    instrument: prefs.get('lastInstr', (st.instruments[0] || {}).name || ''), dir: 'long', bias: '', profile: '', prevDir: '', prevType: '', prevSide: '', prevClose: '', smt: [], inval: '',
     planEntry: '', planStop: '', planPartial: '', planTarget: '', actual: '', biasOk: '', failSign: '', failTime: '', lesson: '',
     entry: '', stop: '', target: '', exit: '', size: '', riskUsd: +(st.accountSize * st.riskPct / 100).toFixed(2), pnl: '', rOverride: '',
     checks: {}, followed: null, takeAgain: '', emotion: 3, mistakes: [], reasons: [], missed: false, review: {}, notes: '', images: [], created: Date.now(),
@@ -1042,9 +1040,7 @@ async function viewForm(id) {
             <div class="q-sub"><span>Type</span>${seg('prevType', Object.entries(PREV_TYPE), d.prevType)}</div>
             <div class="q-sub" id="q-side" ${d.prevType === 'inside' ? 'hidden' : ''}><span>Level engaged</span>${seg('prevSide', Object.entries(PREV_SIDE), d.prevSide)}</div>
             <div class="q-sub"><span>Closed in the</span>${seg('prevClose', Object.entries(PREV_CLOSE), d.prevClose)}</div></div>`)}
-          ${qrow(2, 'Daily bias', `<div class="q-subs">
-            <div class="q-sub"><span>Direction</span>${seg('bias', Object.entries(BIAS), d.bias, 'pn')}</div>
-            <div class="q-sub"><span>Confidence</span>${seg('conf', [['1', '1'], ['2', '2'], ['3', '3']], d.conf == null ? '' : String(d.conf))}</div></div>`)}
+          ${qrow(2, 'Daily bias', seg('bias', Object.entries(BIAS), d.bias, 'pn'))}
           ${qrow(3, 'Profile expected', seg('profile', Object.entries(PROFILES), d.profile))}
           ${qrow(4, 'SMT at the key level: which index failed?', chips('smt', SMT_OPTS, d.smt))}
           ${qrow(5, 'Invalidation level', `<input class="q-in mono" type="text" inputmode="decimal" data-f="inval" value="${esc(d.inval)}" placeholder="One price, e.g. 30,461.7">`)}
@@ -1230,7 +1226,7 @@ async function viewForm(id) {
     $$('button', g).forEach(x => x.setAttribute('aria-pressed', String(x === b)));
     if (k === 'followed') d.followed = v === 'yes';
     else if (k === 'missed') d.missed = v === 'yes';
-    else if (k === 'emotion' || k === 'conf') d[k] = Number(v);
+    else if (k === 'emotion') d[k] = Number(v);
     else d[k] = v;
     if (k === 'prevType') $('#q-side').hidden = v === 'inside';
     if (k === 'stopMgmt' && v === 'widened' && !d.mistakes.includes(MISTAKES[0])) {   // moving the stop away is always a tagged mistake
@@ -1573,7 +1569,7 @@ async function exportJSON() {
 }
 
 function exportCSV() {
-  const cols = ['date', 'time', 'kind', 'acct', 'instrument', 'dir', 'entryTf', 'prevDir', 'prevType', 'prevSide', 'prevClose', 'bias', 'conf', 'profile', 'smt', 'inval', 'planEntry', 'planStop', 'planPartial', 'planTarget', 'actual', 'biasOk', 'failSign', 'failTime', 'lesson', 'entry', 'stop', 'target', 'exit', 'stopMgmt', 'exits', 'log', 'size', 'riskUsd', 'R', 'pnlUsd', 'followed', 'takeAgain', 'emotion', 'mistakes', 'reasons', 'missed', 'notes'];
+  const cols = ['date', 'time', 'kind', 'acct', 'instrument', 'dir', 'entryTf', 'prevDir', 'prevType', 'prevSide', 'prevClose', 'bias', 'profile', 'smt', 'inval', 'planEntry', 'planStop', 'planPartial', 'planTarget', 'actual', 'biasOk', 'failSign', 'failTime', 'lesson', 'entry', 'stop', 'target', 'exit', 'stopMgmt', 'exits', 'log', 'size', 'riskUsd', 'R', 'pnlUsd', 'followed', 'takeAgain', 'emotion', 'mistakes', 'reasons', 'missed', 'notes'];
   const q = v => { const s = v == null ? '' : String(v); return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
   const rows = [...S.trades].sort(byTime).map(t => cols.map(c => {
     if (c === 'R') { const r = tradeR(t); return r == null ? '' : r.toFixed(3); }
@@ -1620,8 +1616,8 @@ function sampleData() {
   // pre/post-session read
   const session = (bias, good) => {
     const prevDir = rnd() < 0.5 ? 'up' : 'down';
-    const x = { prevDir, prevType: pick(['manip', 'manip', 'closure', 'inside']), prevSide: pick(['high', 'low']), prevClose: pick(['upper', 'middle', 'lower']), bias, conf: 1 + Math.floor(rnd() * 3) };
-    const pRight = (x.prevType === 'inside' ? 0.45 : 0.64) + (x.conf - 2) * 0.08 + (good ? 0.12 : -0.12);
+    const x = { prevDir, prevType: pick(['manip', 'manip', 'closure', 'inside']), prevSide: pick(['high', 'low']), prevClose: pick(['upper', 'middle', 'lower']), bias };
+    const pRight = (x.prevType === 'inside' ? 0.45 : 0.64) + (good ? 0.12 : -0.12);
     const ok = rnd() < pRight;
     const exp = pick(['18', 'london', 'london', 'nyrev']);
     Object.assign(x, {
