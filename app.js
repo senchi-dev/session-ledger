@@ -34,6 +34,11 @@ const PREV_TYPE = { manip: 'Manipulation', closure: 'Closure through', inside: '
 const PREV_SIDE = { high: 'The high', low: 'The low' };
 const PREV_CLOSE = { upper: 'Upper third', middle: 'Middle', lower: 'Lower third' };
 const SMT_OPTS = ['ES', 'NQ', 'YM', 'None'];
+const STOP_MGMT = { held: 'Left where placed', be: 'Moved to break-even', trailed: 'Trailed', widened: 'Moved away' };
+const EXIT_WHY = ['Partial at target', 'Final target', 'Trailed out', 'Break-even stop', 'Stopped out', 'Manual', 'Time exit'];
+const LOG_KIND = { read: 'Read', inval: 'Invalidated', flip: 'New read', entry: 'Entry', manage: 'Managed', exit: 'Exit', note: 'Note' };
+const LOG_HAS_DIR = k => k === 'read' || k === 'flip';
+const READ_REL = ['With the initial read', 'After the read flipped', 'No initial bias'];
 const has = v => v != null && String(v).trim() !== '';
 const PRE_DONE = [
   d => d.prevDir && d.prevType && d.prevClose && (d.prevType === 'inside' || d.prevSide), d => d.bias && d.conf, d => d.profile,
@@ -292,10 +297,28 @@ function cloudLine(c) {
 }
 
 // ───────────────────────── maths ─────────────────────────
+// R of a single exit price, and the listed exits that carry both a size and a price
+function exitR(t, x) {
+  const e = num(t.entry), s = num(t.stop);
+  const risk = e != null && s != null ? Math.abs(e - s) : 0;
+  return risk && x != null ? (t.dir === 'short' ? e - x : x - e) / risk : null;
+}
+const exitRows = t => (t.exits || []).filter(x => num(x.pct) > 0 && num(x.price) != null);
+const exitsPct = t => exitRows(t).reduce((a, x) => a + num(x.pct), 0);
+const exitsAvg = t => { const p = exitsPct(t); return p ? exitRows(t).reduce((a, x) => a + num(x.pct) * num(x.price), 0) / p : null; };
+// did the trade follow the pre-9:30 bias, or a read that replaced it during the session?
+const readRel = t => t.kind !== 'trade' || !t.bias ? null : t.bias === 'none' ? READ_REL[2] : (t.bias === 'bull') === (t.dir !== 'short') ? READ_REL[0] : READ_REL[1];
+
 function tradeR(t) {
   if (!t || t.kind !== 'trade') return null;
   const o = num(t.rOverride);
   if (o != null) return o;
+  const rows = exitRows(t);
+  if (rows.length) {
+    if (Math.abs(exitsPct(t) - 100) > 0.5) return null;   // part of the position is still open, or the sizes don't add up
+    const rs = rows.map(x => exitR(t, num(x.price)));
+    return rs.some(r => r == null) ? null : rows.reduce((a, x, i) => a + num(x.pct) / 100 * rs[i], 0);
+  }
   const e = num(t.entry), s = num(t.stop), x = num(t.exit);
   if (e == null || s == null || x == null) return null;
   const risk = Math.abs(e - s);
@@ -505,9 +528,11 @@ function viewDashboard() {
   </section>
 
   <section class="row three">
-    <article class="card">${bars('By daily profile', groupBy(st.closed, t => t.profile, PROFILE_ORDER, profLabel))}</article>
+    <article class="card">${bars('By daily profile', groupBy(st.closed, t => t.profile, PROFILE_ORDER, profLabel))}
+      <div class="rule-gap"></div>${bars('Initial read vs a flipped read', groupBy(st.closed, readRel, READ_REL))}</article>
     <article class="card">${bars('By entry time (ET)', groupBy(st.closed, timeBucket, BUCKETS))}</article>
-    <article class="card">${bars('By entry timeframe', groupBy(st.closed, t => t.entryTf, ['15m', '5m', '3m']))}</article>
+    <article class="card">${bars('By entry timeframe', groupBy(st.closed, t => t.entryTf, ['15m', '5m', '3m']))}
+      <div class="rule-gap"></div>${bars('By stop handling', groupBy(st.closed, t => t.stopMgmt, Object.keys(STOP_MGMT), k => STOP_MGMT[k]))}</article>
   </section>
 
   <section class="row three">
@@ -750,7 +775,7 @@ function viewTrades() {
   if (q.out !== 'all') list = list.filter(t => q.out === 'notrade' ? t.kind === 'notrade' : t.kind === 'trade' && outcome(tradeR(t)) === q.out);
   if (q.text) {
     const s = q.text.toLowerCase();
-    list = list.filter(t => [t.instrument, t.notes, profLabel(t.profile), t.lesson, t.failSign, t.planEntry, t.planStop, t.planPartial, t.planTarget, ...(t.mistakes || []), ...(t.reasons || []), ...Object.values(t.review || {})]
+    list = list.filter(t => [t.instrument, t.notes, profLabel(t.profile), t.lesson, t.failSign, t.planEntry, t.planStop, t.planPartial, t.planTarget, ...(t.log || []).map(x => x.text), ...(t.mistakes || []), ...(t.reasons || []), ...Object.values(t.review || {})]
       .join(' ').toLowerCase().includes(s));
   }
   list = [...list].sort((a, b) => byTime(b, a));
@@ -851,7 +876,7 @@ async function viewDetail(id) {
         <div><dt>Entry</dt><dd>${esc(t.entry || '—')}</dd></div>
         <div><dt>Stop</dt><dd>${esc(t.stop || '—')}</dd></div>
         <div><dt>Target</dt><dd>${esc(t.target || '—')}</dd></div>
-        <div><dt>Exit</dt><dd>${esc(t.exit || '—')}</dd></div>
+        <div><dt>Exit${exitRows(t).length ? ' (average)' : ''}</dt><dd>${exitRows(t).length ? exitsAvg(t).toFixed(2) : esc(t.exit || '—')}</dd></div>
         <div><dt>Stop distance</dt><dd>${stopPts != null ? stopPts.toFixed(2) + ' pts' : '—'}</dd></div>
         <div><dt>Size</dt><dd>${esc(t.size || '—')}</dd></div>
         <div><dt>Risk</dt><dd>${num(t.riskUsd) != null ? '$' + num(t.riskUsd).toFixed(2) : '—'}</dd></div>
@@ -866,6 +891,8 @@ async function viewDetail(id) {
     </article>`}
     <article class="card span2">${preBlock(t)}</article>
     <article class="card">${postBlock(t)}</article>
+    <article class="card ${isNT ? 'span3' : 'span2'}">${logBlock(t)}</article>
+    ${isNT ? '' : `<article class="card">${mgmtBlock(t)}</article>`}
     <article class="card span2">
       <h2 style="margin-bottom:12px">Review${qk ? ` <span class="muted">· ${esc(Q_LABEL[qk])}</span>` : ''}</h2>
       ${answered.length ? `<div class="qa">${answered.map(q => `<div><h3>${esc(q)}</h3><p>${esc(t.review[q])}</p></div>`).join('')}</div>` : '<p class="empty">No review answers yet. <a class="link" href="#edit/' + t.id + '">Add them</a></p>'}
@@ -923,6 +950,25 @@ function postBlock(t) {
   ]);
 }
 
+function logBlock(t) {
+  const rows = t.log || [];
+  const dir = x => LOG_HAS_DIR(x.kind) && BIAS[x.dir] ? `<span class="${x.dir === 'bull' ? 'pos' : x.dir === 'bear' ? 'neg' : 'muted'}">${esc(BIAS[x.dir])}</span>` : '';
+  return `<div class="card-h"><h2>How the day unfolded</h2><span class="muted small">${plural(rows.length, 'step')}</span></div>` + (rows.length
+    ? `<ol class="tl">${rows.map(x => `<li><span class="tl-t mono">${esc(x.time || '—')}</span><div><div class="tl-k">${tag(LOG_KIND[x.kind] || LOG_KIND.note, x.kind === 'inval' ? 'bad' : '')}${dir(x)}</div>${has(x.text) ? `<p>${esc(x.text)}</p>` : ''}</div></li>`).join('')}</ol>`
+    : `<p class="empty">No steps logged. <a class="link" href="#edit/${t.id}">Add them</a></p>`);
+}
+function mgmtBlock(t) {
+  const rows = exitRows(t), pct = exitsPct(t), size = num(t.size), rel = readRel(t), r = tradeR(t);
+  return `<h2 style="margin-bottom:12px">Management</h2>
+    <dl class="kv">
+      <div><dt>Stop loss</dt><dd class="sans">${t.stopMgmt ? tag(STOP_MGMT[t.stopMgmt], t.stopMgmt === 'widened' ? 'bad' : '') : '—'}</dd></div>
+      <div><dt>Traded</dt><dd class="sans">${rel ? tag(rel) : '—'}</dd></div>
+    </dl>
+    ${rows.length ? `<table class="ex"><tbody>${rows.map(x => { const xr = exitR(t, num(x.price)); return `<tr><td class="mono">${num(x.pct)}%${size ? ` <span class="muted">· ${(size * num(x.pct) / 100).toFixed(2)} lots</span>` : ''}</td><td class="mono">${esc(x.price)}</td><td class="mono ${cls(xr)}">${fmtR(xr)}</td><td class="muted">${esc(x.why || '')}</td></tr>`; }).join('')}</tbody></table>
+      <p class="small muted" style="margin:10px 0 0">${Math.abs(pct - 100) <= 0.5 ? `Fully closed · blended ${fmtR(r)}` : pct < 100 ? `${pct}% closed · ${(100 - pct).toFixed(0)}% still open` : `Exits add up to ${pct}%: check the sizes`}</p>`
+      : '<p class="empty" style="margin-top:12px">No partials logged: one exit for the whole position.</p>'}`;
+}
+
 function reviewKey(d) {
   if (d.kind === 'notrade') return d.missed ? 'ntMissed' : 'ntGood';
   const o = outcome(tradeR(d));
@@ -965,6 +1011,7 @@ async function viewForm(id) {
     checks: {}, followed: null, takeAgain: '', emotion: 3, mistakes: [], reasons: [], missed: false, review: {}, notes: '', images: [], created: Date.now(),
   };
   d.checks = d.checks || {}; d.mistakes = d.mistakes || []; d.reasons = d.reasons || []; d.review = d.review || {}; d.smt = d.smt || [];
+  d.exits = d.exits || []; d.log = d.log || [];
   const imgs = existing ? (await DB.imagesOf(id)).sort((a, b) => (d.images || []).indexOf(a.id) - (d.images || []).indexOf(b.id)) : [];
   const form = { d, imgs: imgs.map(i => ({ ...i, url: trackUrl(i.blob) })), removed: [] };
   const instOpts = [...new Set([...st.instruments.map(i => i.name), d.instrument].filter(Boolean))];
@@ -1009,6 +1056,12 @@ async function viewForm(id) {
         </ol>
       </section>
 
+      <section class="card fs">
+        <div class="sec-h"><div><h2>How the day unfolded</h2><p class="sec-sub">One line per change of mind or action, in order. A read that got invalidated stays where it is; add the new one under it.</p></div></div>
+        <div class="lines" id="log"></div>
+        <button type="button" class="btn small" id="log-add">Add a step</button>
+      </section>
+
       <section class="card fs tr-only">
         <h2>Execution</h2>
         <div class="fgrid">
@@ -1016,11 +1069,22 @@ async function viewForm(id) {
           ${numField('entry', 'Entry price', d.entry)}
           ${numField('stop', 'Stop loss', d.stop)}
           ${numField('target', 'Target', d.target)}
-          ${numField('exit', 'Exit price (average)', d.exit, 'Leave empty while the trade is open')}
+          ${numField('exit', 'Exit price (average)', d.exit, 'Not used once exits are listed under Management')}
           ${numField('riskUsd', 'Risk ($)', d.riskUsd, `${st.riskPct}% of $${Number(st.accountSize).toLocaleString('en-US')}`)}
           ${numField('size', 'Size (lots)', d.size)}
           ${numField('pnl', 'P&L from broker ($)', d.pnl, 'Optional: overrides R × risk')}
-          ${numField('rOverride', 'Result in R (manual)', d.rOverride, 'Optional: for partials')}
+          ${numField('rOverride', 'Result in R (manual)', d.rOverride, 'Optional: overrides everything')}
+        </div>
+      </section>
+
+      <section class="card fs tr-only">
+        <div class="sec-h"><div><h2>Management</h2><p class="sec-sub">What you did with the stop, and every exit with its size. The result is worked out from the exits.</p></div></div>
+        <div class="stack">
+          <div class="fld"><span>Stop loss</span>${seg('stopMgmt', Object.entries(STOP_MGMT), d.stopMgmt || '')}</div>
+          <div><p class="sub-h">Exits</p>
+            <div class="lines" id="exits"></div>
+            <div class="line-foot"><button type="button" class="btn small" id="exit-add">Add an exit</button><span class="hint" id="exit-sum"></span></div>
+          </div>
         </div>
       </section>
 
@@ -1091,6 +1155,67 @@ async function viewForm(id) {
     $('#pre-n').textContent = pn + '/6'; $('#pre-n').classList.toggle('pos', pn === 6);
     $('#post-n').textContent = qn + '/4'; $('#post-n').classList.toggle('pos', qn === 4);
   };
+  // exits: size, price and reason per partial
+  const exitMeta = () => {
+    $$('#exits .line').forEach((row, i) => { const r = exitR(d, num(d.exits[i].price)); const el = $('.line-r', row); el.textContent = fmtR(r); el.className = 'line-r mono ' + cls(r); });
+    const pct = exitsPct(d), n = exitRows(d).length;
+    $('#exit-sum').textContent = !n ? 'No partials? Leave this empty and use the exit price above.' : Math.abs(pct - 100) <= 0.5 ? `100% closed · blended ${fmtR(tradeR(d))}` : pct < 100 ? `${pct}% closed · ${(100 - pct).toFixed(0)}% still open` : `Sizes add up to ${pct}%: they should total 100%`;
+  };
+  const renderExits = () => {
+    $('#exits').innerHTML = (d.exits.length ? '<div class="line-head"><span>% of position</span><span>Exit price</span><span>Reason</span><span>Result</span></div>' : '') + d.exits.map((x, i) => `<div class="line exit" data-i="${i}">
+      <input type="number" step="any" inputmode="decimal" data-x="pct" value="${esc(x.pct ?? '')}" placeholder="% of position" aria-label="Percent of the position closed">
+      <input type="number" step="any" inputmode="decimal" data-x="price" value="${esc(x.price ?? '')}" placeholder="Exit price" aria-label="Exit price">
+      <select data-x="why" aria-label="Reason for this exit">${EXIT_WHY.map(w => `<option ${w === x.why ? 'selected' : ''}>${w}</option>`).join('')}</select>
+      <span class="line-r mono"></span>
+      <button type="button" class="icon-btn" data-rm-line aria-label="Remove this exit">×</button></div>`).join('');
+    exitMeta();
+  };
+  $('#exit-add').addEventListener('click', () => {
+    const left = Math.max(0, 100 - d.exits.reduce((a, x) => a + (num(x.pct) || 0), 0));
+    d.exits.push({ pct: d.exits.length ? left || '' : 50, price: '', why: d.exits.length ? 'Final target' : 'Partial at target' });
+    renderExits(); refresh();
+    $('#exits .line:last-child [data-x="price"]').focus();
+  });
+  $('#exits').addEventListener('input', e => {
+    const row = e.target.closest('.line'), k = e.target.dataset.x;
+    if (!row || !k) return;
+    d.exits[+row.dataset.i][k] = e.target.value;
+    exitMeta(); refresh();
+  });
+  $('#exits').addEventListener('click', e => {
+    if (!e.target.closest('[data-rm-line]')) return;
+    d.exits.splice(+e.target.closest('.line').dataset.i, 1);
+    renderExits(); refresh();
+  });
+
+  // the day's timeline: reads, invalidations, entries, management
+  const renderLog = () => {
+    $('#log').innerHTML = d.log.map((x, i) => `<div class="line log" data-i="${i}">
+      <input type="time" data-l="time" value="${esc(x.time || '')}" aria-label="Time (ET)">
+      <select data-l="kind" aria-label="Kind of step">${Object.entries(LOG_KIND).map(([k, l]) => `<option value="${k}" ${k === x.kind ? 'selected' : ''}>${l}</option>`).join('')}</select>
+      <select data-l="dir" aria-label="Direction of the read" ${LOG_HAS_DIR(x.kind) ? '' : 'disabled'}><option value="">Direction</option>${Object.entries(BIAS).map(([k, l]) => `<option value="${k}" ${LOG_HAS_DIR(x.kind) && k === x.dir ? 'selected' : ''}>${l}</option>`).join('')}</select>
+      <input type="text" data-l="text" value="${esc(x.text || '')}" placeholder="${x.kind === 'inval' ? 'What invalidated it' : LOG_HAS_DIR(x.kind) ? 'What you saw, and why' : 'What you did'}" aria-label="Description">
+      <button type="button" class="icon-btn" data-rm-line aria-label="Remove this step">×</button></div>`).join('');
+  };
+  $('#log-add').addEventListener('click', () => {
+    const NEXT = { read: 'inval', inval: 'flip', flip: 'entry', entry: 'manage', manage: 'exit', exit: 'note', note: 'note' };
+    const last = d.log[d.log.length - 1];
+    d.log.push(last ? { time: '', kind: NEXT[last.kind], dir: '', text: '' } : { time: '', kind: 'read', dir: d.bias || '', text: '' });
+    renderLog();
+    $('#log .line:last-child [data-l="time"]').focus();
+  });
+  $('#log').addEventListener('input', e => {
+    const row = e.target.closest('.line'), k = e.target.dataset.l;
+    if (!row || !k) return;
+    d.log[+row.dataset.i][k] = e.target.value;
+    if (k === 'kind') renderLog();
+  });
+  $('#log').addEventListener('click', e => {
+    if (!e.target.closest('[data-rm-line]')) return;
+    d.log.splice(+e.target.closest('.line').dataset.i, 1);
+    renderLog();
+  });
+
   const renderThumbs = () => {
     $('#thumbs').innerHTML = form.imgs.map((im, i) => `<figure class="thumb"><img src="${im.url}" alt="${esc(im.label)}">
       <figcaption><select data-img="${i}" aria-label="Screenshot label">${IMG_LABELS.map(l => `<option ${l === im.label ? 'selected' : ''}>${l}</option>`).join('')}</select>
@@ -1108,6 +1233,11 @@ async function viewForm(id) {
     else if (k === 'emotion' || k === 'conf') d[k] = Number(v);
     else d[k] = v;
     if (k === 'prevType') $('#q-side').hidden = v === 'inside';
+    if (k === 'stopMgmt' && v === 'widened' && !d.mistakes.includes(MISTAKES[0])) {   // moving the stop away is always a tagged mistake
+      d.mistakes.push(MISTAKES[0]);
+      $$('[data-chips="mistakes"] button', f).forEach(x => x.setAttribute('aria-pressed', String(d.mistakes.includes(x.dataset.v))));
+    }
+    if (k === 'dir') exitMeta();
     if (k === 'biasOk') $('#q-fail').hidden = v !== 'wrong';
     if (k === 'kind') f.classList.toggle('is-notrade', v === 'notrade');
     refresh();
@@ -1122,7 +1252,7 @@ async function viewForm(id) {
     $$('button', g).forEach(x => x.setAttribute('aria-pressed', String(next.includes(x.dataset.v))));
     refresh();
   }));
-  $$('[data-f]', f).forEach(inp => inp.addEventListener('input', () => { d[inp.dataset.f] = inp.value; refresh(); }));
+  $$('[data-f]', f).forEach(inp => inp.addEventListener('input', () => { d[inp.dataset.f] = inp.value; if (inp.dataset.f === 'entry' || inp.dataset.f === 'stop') exitMeta(); refresh(); }));
   $$('[data-check]', f).forEach(c => c.addEventListener('change', () => { d.checks[c.dataset.check] = c.checked; }));
 
   // screenshots
@@ -1166,6 +1296,8 @@ async function viewForm(id) {
   onLeave(() => document.removeEventListener('keydown', onKey));
 
   renderThumbs();
+  renderExits();
+  renderLog();
   refresh();
 }
 
@@ -1202,6 +1334,7 @@ function previewCore(d) {
   const r = tradeR(d), p = tradePnl(d);
   let warn = '';
   if (e != null && s != null && ((d.dir === 'long' && s >= e) || (d.dir === 'short' && s <= e))) warn = `Your stop is on the wrong side of entry for a ${d.dir}.`;
+  else if (exitRows(d).length && exitsPct(d) > 100.5) warn = `Exits add up to ${exitsPct(d)}% of the position.`;
   else if (planned != null && planned < 2) warn = `Planned reward is ${planned.toFixed(2)}R, below the 2R baseline.`;
   return `<h2>Live preview</h2>
     <dl class="kv">
@@ -1210,7 +1343,7 @@ function previewCore(d) {
       <div><dt>Suggested size</dt><dd>${lots != null ? lots.toFixed(2) + ' lots' : '—'}</dd></div>
       <div><dt>Risk</dt><dd>${risk != null ? '$' + risk.toFixed(2) : '—'}</dd></div>
     </dl>
-    <div class="pv-result"><span class="small muted">Result</span><span class="pv-big mono ${cls(r)}">${r == null ? '<span class="muted">open</span>' : fmtR(r)}</span><span class="mono ${cls(p)}">${fmtUsd(p)}</span></div>
+    <div class="pv-result"><span class="small muted">Result</span><span class="pv-big mono ${cls(r)}">${r == null ? `<span class="muted">${exitRows(d).length && exitsPct(d) < 99.5 ? exitsPct(d) + '% closed' : 'open'}</span>` : fmtR(r)}</span><span class="mono ${cls(p)}">${fmtUsd(p)}</span></div>
     ${warn ? `<p class="pv-warn">${esc(warn)}</p>` : ''}`;
 }
 
@@ -1247,6 +1380,9 @@ async function saveForm(form) {
       if (im.isNew || im.dirty) await DB.put('images', { id: im.id, tradeId: d.id, blob: im.blob, label: im.label, created: im.created || Date.now() });
     }
     d.images = form.imgs.map(i => i.id);
+    d.exits = (d.exits || []).filter(x => has(x.pct) || has(x.price));
+    d.log = (d.log || []).filter(x => has(x.text) || has(x.time)).map((x, i) => ({ ...x, i }))
+      .sort((a, b) => a.time && b.time ? a.time.localeCompare(b.time) || a.i - b.i : a.i - b.i).map(({ i, ...x }) => x);
     d.updated = Date.now();
     await DB.put('trades', d);
     const i = S.trades.findIndex(t => t.id === d.id);
@@ -1437,13 +1573,17 @@ async function exportJSON() {
 }
 
 function exportCSV() {
-  const cols = ['date', 'time', 'kind', 'acct', 'instrument', 'dir', 'entryTf', 'prevDir', 'prevType', 'prevSide', 'prevClose', 'bias', 'conf', 'profile', 'smt', 'inval', 'planEntry', 'planStop', 'planPartial', 'planTarget', 'actual', 'biasOk', 'failSign', 'failTime', 'lesson', 'entry', 'stop', 'target', 'exit', 'size', 'riskUsd', 'R', 'pnlUsd', 'followed', 'takeAgain', 'emotion', 'mistakes', 'reasons', 'missed', 'notes'];
+  const cols = ['date', 'time', 'kind', 'acct', 'instrument', 'dir', 'entryTf', 'prevDir', 'prevType', 'prevSide', 'prevClose', 'bias', 'conf', 'profile', 'smt', 'inval', 'planEntry', 'planStop', 'planPartial', 'planTarget', 'actual', 'biasOk', 'failSign', 'failTime', 'lesson', 'entry', 'stop', 'target', 'exit', 'stopMgmt', 'exits', 'log', 'size', 'riskUsd', 'R', 'pnlUsd', 'followed', 'takeAgain', 'emotion', 'mistakes', 'reasons', 'missed', 'notes'];
   const q = v => { const s = v == null ? '' : String(v); return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
   const rows = [...S.trades].sort(byTime).map(t => cols.map(c => {
     if (c === 'R') { const r = tradeR(t); return r == null ? '' : r.toFixed(3); }
     if (c === 'pnlUsd') { const p = tradePnl(t); return p == null ? '' : p.toFixed(2); }
     if (c === 'mistakes' || c === 'reasons' || c === 'smt') return (t[c] || []).join('; ');
     if (c === 'profile' || c === 'actual') return profLabel(t[c]);
+    if (c === 'exit') return exitRows(t).length ? exitsAvg(t).toFixed(2) : t.exit;
+    if (c === 'stopMgmt') return STOP_MGMT[t.stopMgmt] || '';
+    if (c === 'exits') return exitRows(t).map(x => `${x.pct}% @ ${x.price}${x.why ? ' (' + x.why + ')' : ''}`).join('; ');
+    if (c === 'log') return (t.log || []).map(x => [x.time, LOG_KIND[x.kind], LOG_HAS_DIR(x.kind) ? BIAS[x.dir] : '', x.text].filter(Boolean).join(' · ')).join(' | ');
     return t[c];
   }).map(q).join(','));
   download(`session-ledger-trades-${today()}.csv`, new Blob([cols.join(',') + '\n' + rows.join('\n')], { type: 'text/csv' }));
@@ -1513,11 +1653,16 @@ function sampleData() {
     if (!followed && R > 0) R = R * 0.4 - 0.6;
     const hh = rnd() < 0.25 ? 8 : rnd() < 0.8 ? 9 : 11;
     const mm = hh === 9 ? 31 + Math.floor(rnd() * 28) : Math.floor(rnd() * 59);
+    const px = r => +(dir === 'long' ? entry + r * stopPts : entry - r * stopPts).toFixed(2);
+    const runner = R > 2.2;   // took half off at 2R and let the rest run
     out.push({
       id: uid(), sample: true, kind: 'trade', acct: 'backtest', date: ds, time: `${pad2(hh)}:${pad2(mm)}`,
       instrument: 'US100.cash', dir, entryTf: pick(['5m', '5m', '15m', '3m']), ...session(dir === 'long' ? 'bull' : 'bear', R > 0),
       entry, stop: dir === 'long' ? entry - stopPts : entry + stopPts, target: dir === 'long' ? entry + 2 * stopPts : entry - 2 * stopPts,
-      exit: +(dir === 'long' ? entry + R * stopPts : entry - R * stopPts).toFixed(2), size: +(50 / stopPts).toFixed(2), riskUsd: 50, pnl: '', rOverride: '',
+      exit: runner ? '' : px(R), exits: runner ? [{ pct: 50, price: px(2), why: 'Partial at target' }, { pct: 50, price: px(2 * R - 2), why: 'Trailed out' }] : [],
+      stopMgmt: !followed && R < 0 ? 'widened' : runner ? 'trailed' : R === 0 ? 'be' : 'held',
+      log: [{ time: '08:10', kind: 'read', dir: dir === 'long' ? 'bull' : 'bear', text: 'London made the extreme and held away from it.' }, { time: `${pad2(hh)}:${pad2(mm)}`, kind: 'entry', dir: '', text: 'CISD on the pullback.' }],
+      size: +(50 / stopPts).toFixed(2), riskUsd: 50, pnl: '', rOverride: '',
       checks: { bias: true, cisd15: true, sig5: rnd() < 0.9, room: true, open: rnd() < 0.75 }, followed, takeAgain: followed ? 'yes' : 'no',
       emotion: 2 + Math.floor(rnd() * 4), mistakes: followed ? [] : [pick(MISTAKES.slice(0, 6))], reasons: [], missed: false, review: {},
       notes: 'Sample entry.', images: [], created: Date.now(),
