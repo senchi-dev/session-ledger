@@ -41,10 +41,12 @@ const LOG_HAS_DIR = k => k === 'read' || k === 'flip';
 const READ_REL = ['With the initial read', 'After the read flipped', 'No initial bias'];
 const has = v => v != null && String(v).trim() !== '';
 const PRE_DONE = [
-  d => d.prevDir && d.prevType && d.prevClose && (d.prevType === 'inside' || d.prevSide), d => d.bias, d => d.profile,
-  d => (d.smt || []).length, d => has(d.inval), d => has(d.planEntry) && has(d.planStop) && has(d.planTarget),
+  d => d.prevType && (d.prevType === 'inside' || d.prevSide), d => d.bias, d => d.profile,
+  d => (d.smt || []).length, d => has(d.inval), d => has(d.draw) || has(d.planTarget),
 ];
-const POST_DONE = [d => d.actual, d => d.biasOk, d => d.followed === true || d.followed === false, d => has(d.lesson)];
+const POST_DONE = [d => d.actual, d => d.biasOk, d => d.drawHit, d => d.followed === true || d.followed === false, d => has(d.lesson)];
+const price = v => num(String(v ?? '').replace(/[,\s]/g, ''));   // prices are typed as 30,461.7
+const ROOM = ['2R or more to the draw', 'Less than 2R to the draw'];
 const countDone = (checks, d) => checks.filter(fn => fn(d)).length;
 const CHECKS = [
   ['bias', 'Bias checklist done'], ['cisd15', '15m CISD confirmed'], ['sig5', '5m continuation signature'],
@@ -309,6 +311,14 @@ const exitsAvg = t => { const p = exitsPct(t); return p ? exitRows(t).reduce((a,
 // did the trade follow the pre-9:30 bias, or a read that replaced it during the session?
 const readRel = t => t.kind !== 'trade' || !t.bias ? null : t.bias === 'none' ? READ_REL[2] : (t.bias === 'bull') === (t.dir !== 'short') ? READ_REL[0] : READ_REL[1];
 
+// R available from the entry to the pre-9:30 draw; null when the draw sits behind the entry (a flipped read)
+function roomR(t) {
+  const e = num(t.entry), s = num(t.stop), dr = price(t.draw);
+  if (t.kind !== 'trade' || e == null || s == null || dr == null || e === s) return null;
+  const r = (t.dir === 'short' ? e - dr : dr - e) / Math.abs(e - s);
+  return r > 0 ? r : null;
+}
+
 function tradeR(t) {
   if (!t || t.kind !== 'trade') return null;
   const o = num(t.rOverride);
@@ -402,12 +412,15 @@ function readStats(list) {
   const graded = list.filter(t => t.biasOk === 'right' || t.biasOk === 'wrong');
   const called = list.filter(t => t.profile && t.actual);
   const rated = list.filter(t => t.followed === true || t.followed === false);
+  const drawn = list.filter(t => t.drawHit === 'yes' || t.drawHit === 'no');
   const rate = (a, fn) => a.length ? a.filter(fn).length / a.length : null;
   return {
     graded, called,
     bias: rate(graded, t => t.biasOk === 'right'),
     profile: rate(called, t => t.profile === t.actual),
     plan: rate(rated, t => t.followed),
+    draw: rate(drawn, t => t.drawHit === 'yes'),
+    bySmt: rateBy(graded, t => !(t.smt || []).length ? null : t.smt.includes('None') ? 'No SMT' : 'SMT at the level', ['SMT at the level', 'No SMT']),
     byPrev: rateBy(graded, t => t.prevType, Object.keys(PREV_TYPE), k => PREV_TYPE[k]),
     byProfile: rateBy(called, t => t.profile, PROFILE_ORDER, profLabel, t => t.profile === t.actual),
     lessons: [...list].filter(t => has(t.lesson)).sort((a, b) => byTime(b, a)).slice(0, 6),
@@ -521,7 +534,8 @@ function viewDashboard() {
 
   <section class="row three">
     <article class="card">${readCard(rd)}</article>
-    <article class="card">${rateBars('Bias accuracy by yesterday’s candle', rd.byPrev, 'which daily setups do you read best?')}</article>
+    <article class="card">${rateBars('Bias accuracy by yesterday’s candle', rd.byPrev, 'which daily setups do you read best?')}
+      <div class="rule-gap"></div>${rateBars('Bias accuracy with or without SMT', rd.bySmt)}</article>
     <article class="card">${rateBars('Profile called correctly', rd.byProfile, 'expected profile vs what happened')}</article>
   </section>
 
@@ -534,7 +548,8 @@ function viewDashboard() {
   </section>
 
   <section class="row three">
-    <article class="card">${bars('Rules followed vs broken', groupBy(st.closed, t => t.followed === true ? 'Followed' : t.followed === false ? 'Broken' : null, ['Followed', 'Broken']))}</article>
+    <article class="card">${bars('Rules followed vs broken', groupBy(st.closed, t => t.followed === true ? 'Followed' : t.followed === false ? 'Broken' : null, ['Followed', 'Broken']))}
+      <div class="rule-gap"></div>${bars('Room at entry', groupBy(st.closed, t => { const r = roomR(t); return r == null ? null : r >= 2 ? ROOM[0] : ROOM[1]; }, ROOM))}</article>
     <article class="card">${bars('Cost of mistakes', groupBy(st.closed, t => t.mistakes || [], MISTAKES), 'net R per tag')}</article>
     <article class="card">${lessonsCard(rd.lessons)}</article>
   </section>
@@ -631,7 +646,8 @@ function readCard(rd) {
     <p class="small muted" style="margin:-6px 0 0">of daily biases were right</p>
     <dl class="test-dl">
       <div><dt>Profile called</dt><dd class="mono ${tone(rd.profile)}">${fmtPct(rd.profile)}</dd></div>
-      <div><dt>Plan followed</dt><dd class="mono ${rd.plan == null ? '' : rd.plan >= .9 ? 'pos' : 'neg'}">${fmtPct(rd.plan)}</dd></div>
+      <div><dt>Draw reached</dt><dd class="mono ${tone(rd.draw)}">${fmtPct(rd.draw)}</dd></div>
+      <div><dt>Rules followed</dt><dd class="mono ${rd.plan == null ? '' : rd.plan >= .9 ? 'pos' : 'neg'}">${fmtPct(rd.plan)}</dd></div>
     </dl>
     <p class="status">${rd.graded.length < 20 ? `Too early to judge: ${plural(20 - rd.graded.length, 'more session')} before these numbers mean much.` : 'Enough sessions to start trusting these splits.'}</p>`;
 }
@@ -773,7 +789,7 @@ function viewTrades() {
   if (q.out !== 'all') list = list.filter(t => q.out === 'notrade' ? t.kind === 'notrade' : t.kind === 'trade' && outcome(tradeR(t)) === q.out);
   if (q.text) {
     const s = q.text.toLowerCase();
-    list = list.filter(t => [t.instrument, t.notes, profLabel(t.profile), t.lesson, t.failSign, t.planEntry, t.planStop, t.planPartial, t.planTarget, ...(t.log || []).map(x => x.text), ...(t.mistakes || []), ...(t.reasons || []), ...Object.values(t.review || {})]
+    list = list.filter(t => [t.instrument, t.notes, profLabel(t.profile), t.lesson, t.failSign, t.planEntry, t.planStop, t.planPartial, t.planTarget, t.draw, ...(t.log || []).map(x => x.text), ...(t.mistakes || []), ...(t.reasons || []), ...Object.values(t.review || {})]
       .join(' ').toLowerCase().includes(s));
   }
   list = [...list].sort((a, b) => byTime(b, a));
@@ -842,9 +858,11 @@ async function viewDetail(id) {
   const r = tradeR(t), p = tradePnl(t);
   const isNT = t.kind === 'notrade';
   const title = isNT ? 'No-trade day' : `${t.instrument || 'Trade'} · ${t.dir === 'short' ? 'Short' : 'Long'}`;
-  const e = num(t.entry), s = num(t.stop), tg = num(t.target);
+  const e = num(t.entry), s = num(t.stop), tg = num(t.target) ?? (roomR(t) != null ? price(t.draw) : null);
   const stopPts = e != null && s != null ? Math.abs(e - s) : null;
   const planned = stopPts && tg != null ? (t.dir === 'short' ? e - tg : tg - e) / stopPts : null;
+  const plannedTxt = planned == null ? '' : ` · ${num(t.target) != null ? 'planned' : 'room to the draw'} ${planned.toFixed(2)}R`;
+  const oldChecks = Object.values(t.checks || {}).some(Boolean);
   const qk = reviewKey(t);
   const answered = qk ? Q[qk].filter(q => (t.review || {})[q]) : [];
 
@@ -861,7 +879,7 @@ async function viewDetail(id) {
       ${isNT ? `<div class="result-big muted">pass</div><p class="small muted" style="margin:0">${t.missed ? tag('missed a valid trade', 'bad') : tag('good pass', 'good')}</p>`
         : `<div class="result-big ${cls(r)}">${r == null ? '<span class="muted">open</span>' : fmtR(r)}</div>
            <div class="mono ${cls(p)}">${fmtUsd(p)}</div>
-           <p class="small muted" style="margin:10px 0 0">${r == null ? 'Add an exit price to close it.' : outcome(r) === 'win' ? 'Win' : outcome(r) === 'loss' ? 'Loss' : 'Breakeven'}${planned != null ? ` · planned ${planned.toFixed(2)}R` : ''}</p>`}
+           <p class="small muted" style="margin:10px 0 0">${r == null ? 'Add an exit price to close it.' : outcome(r) === 'win' ? 'Win' : outcome(r) === 'loss' ? 'Loss' : 'Breakeven'}${plannedTxt}</p>`}
     </article>
     ${isNT ? `
     <article class="card span2">
@@ -882,20 +900,19 @@ async function viewDetail(id) {
       </dl>
     </article>
     <article class="card">
-      <h2 style="margin-bottom:12px">Process</h2>
-      <ul class="checklist">${CHECKS.map(([k, l]) => `<li><span class="mk ${(t.checks || {})[k] ? 'ok' : 'muted'}">${(t.checks || {})[k] ? '✓' : '·'}</span>${esc(l)}</li>`).join('')}</ul>
-      <p style="margin:0 0 10px">${t.takeAgain ? tag(t.takeAgain === 'yes' ? 'Would take again' : 'Would not take again', t.takeAgain === 'yes' ? 'good' : 'bad') : ''} ${t.emotion ? tag('Calm ' + t.emotion + '/5') : ''}</p>
+      <h2 style="margin-bottom:12px">Mistakes</h2>
       ${(t.mistakes || []).length ? `<div class="chips">${t.mistakes.map(m => tag(m, 'bad')).join('')}</div>` : '<p class="small muted" style="margin:0">No mistakes tagged.</p>'}
+      ${oldChecks ? `<ul class="checklist" style="margin-top:14px">${CHECKS.map(([k, l]) => `<li><span class="mk ${t.checks[k] ? 'ok' : 'muted'}">${t.checks[k] ? '✓' : '·'}</span>${esc(l)}</li>`).join('')}</ul>` : ''}
     </article>`}
     <article class="card span2">${preBlock(t)}</article>
     <article class="card">${postBlock(t)}</article>
     <article class="card ${isNT ? 'span3' : 'span2'}">${logBlock(t)}</article>
     ${isNT ? '' : `<article class="card">${mgmtBlock(t)}</article>`}
-    <article class="card span2">
-      <h2 style="margin-bottom:12px">Review${qk ? ` <span class="muted">· ${esc(Q_LABEL[qk])}</span>` : ''}</h2>
-      ${answered.length ? `<div class="qa">${answered.map(q => `<div><h3>${esc(q)}</h3><p>${esc(t.review[q])}</p></div>`).join('')}</div>` : '<p class="empty">No review answers yet. <a class="link" href="#edit/' + t.id + '">Add them</a></p>'}
-    </article>
-    <article class="card">
+    ${answered.length ? `<article class="card span2">
+      <h2 style="margin-bottom:12px">Review <span class="muted">· ${esc(Q_LABEL[qk])}</span></h2>
+      <div class="qa">${answered.map(q => `<div><h3>${esc(q)}</h3><p>${esc(t.review[q])}</p></div>`).join('')}</div>
+    </article>` : ''}
+    <article class="card ${answered.length ? '' : 'span3'}">
       <h2 style="margin-bottom:12px">Notes</h2>
       ${t.notes ? `<p class="notes">${esc(t.notes)}</p>` : '<p class="empty">No notes.</p>'}
     </article>
@@ -934,16 +951,18 @@ function preBlock(t) {
     ['Expected profile', esc(profLabel(t.profile))],
     ['SMT at the key level', esc(smt)],
     ['Invalidation', has(t.inval) ? `<span class="mono">${esc(t.inval)}</span>` : ''],
-    ['Plan', plan.length ? `<dl class="kv tight">${plan.map(([k, v]) => `<div><dt>${k}</dt><dd>${esc(v)}</dd></div>`).join('')}</dl>` : ''],
+    has(t.draw) || !plan.length ? ['Draw', has(t.draw) ? `<span class="mono">${esc(t.draw)}</span>` : '']
+      : ['Plan', `<dl class="kv tight">${plan.map(([k, v]) => `<div><dt>${k}</dt><dd>${esc(v)}</dd></div>`).join('')}</dl>`],   // entries written before the draw replaced the plan
   ]);
 }
 function postBlock(t) {
   const n = countDone(POST_DONE, t);
   const hit = t.profile && t.actual ? (t.profile === t.actual ? tag('called it', 'good') : tag('missed', 'bad')) : '';
-  return `<div class="card-h"><h2>After the session</h2><span class="count mono ${n === 4 ? 'pos' : 'muted'}">${n}/4</span></div>` + numbered([
+  return `<div class="card-h"><h2>After the session</h2><span class="count mono ${n === 5 ? 'pos' : 'muted'}">${n}/5</span></div>` + numbered([
     ['Profile that happened', t.actual ? `${esc(profLabel(t.actual))} ${hit}` : ''],
     ['Bias', t.biasOk ? `${tag(t.biasOk === 'right' ? 'Right' : 'Wrong', t.biasOk === 'right' ? 'good' : 'bad')}${t.biasOk === 'wrong' && (has(t.failSign) || t.failTime) ? `<p class="fail">${t.failTime ? `<span class="mono">${esc(t.failTime)} ET</span> · ` : ''}${esc(t.failSign || '')}</p>` : ''}` : ''],
-    ['Followed the plan', t.followed === true ? tag('Yes', 'good') : t.followed === false ? tag('No', 'bad') : ''],
+    ['Draw', t.drawHit ? tag(t.drawHit === 'yes' ? 'Reached' : 'Not reached', t.drawHit === 'yes' ? 'good' : 'bad') : ''],
+    ['Followed my rules', t.followed === true ? tag('Yes', 'good') : t.followed === false ? tag('No', 'bad') : ''],
     ['Lesson', has(t.lesson) ? `<q class="lesson">${esc(t.lesson)}</q>` : ''],
   ]);
 }
@@ -1003,12 +1022,12 @@ async function viewForm(id) {
   const st = S.settings;
   const d = existing ? structuredClone(existing) : {
     id: uid(), kind: 'trade', acct: prefs.get('lastAcct', 'backtest'), date: today(), time: '',
-    instrument: prefs.get('lastInstr', (st.instruments[0] || {}).name || ''), dir: 'long', bias: '', profile: '', prevDir: '', prevType: '', prevSide: '', prevClose: '', smt: [], inval: '',
-    planEntry: '', planStop: '', planPartial: '', planTarget: '', actual: '', biasOk: '', failSign: '', failTime: '', lesson: '',
+    instrument: prefs.get('lastInstr', (st.instruments[0] || {}).name || ''), dir: 'long', bias: '', profile: '', prevType: '', prevSide: '', smt: [], inval: '', draw: '',
+    actual: '', biasOk: '', drawHit: '', failSign: '', failTime: '', lesson: '',
     entry: '', stop: '', target: '', exit: '', size: '', riskUsd: +(st.accountSize * st.riskPct / 100).toFixed(2), pnl: '', rOverride: '',
-    checks: {}, followed: null, takeAgain: '', emotion: 3, mistakes: [], reasons: [], missed: false, review: {}, notes: '', images: [], created: Date.now(),
+    followed: null, mistakes: [], reasons: [], missed: false, review: {}, notes: '', images: [], created: Date.now(),
   };
-  d.checks = d.checks || {}; d.mistakes = d.mistakes || []; d.reasons = d.reasons || []; d.review = d.review || {}; d.smt = d.smt || [];
+  d.mistakes = d.mistakes || []; d.reasons = d.reasons || []; d.review = d.review || {}; d.smt = d.smt || [];
   d.exits = d.exits || []; d.log = d.log || [];
   const imgs = existing ? (await DB.imagesOf(id)).sort((a, b) => (d.images || []).indexOf(a.id) - (d.images || []).indexOf(b.id)) : [];
   const form = { d, imgs: imgs.map(i => ({ ...i, url: trackUrl(i.blob) })), removed: [] };
@@ -1035,20 +1054,14 @@ async function viewForm(id) {
       <section class="card fs">
         <div class="sec-h"><div><h2>Before 9:30</h2><p class="sec-sub">Write it before the open. Don’t rewrite it after the fact. <a class="link" href="#playbook">Playbook</a></p></div><span class="count mono" id="pre-n"></span></div>
         <ol class="qs">
-          ${qrow(1, "Yesterday’s daily", `<div class="q-subs">
-            <div class="q-sub"><span>Candle</span>${seg('prevDir', Object.entries(PREV_DIR), d.prevDir)}</div>
+          ${qrow(1, 'How did yesterday’s daily candle engage its level?', `<div class="q-subs">
             <div class="q-sub"><span>Type</span>${seg('prevType', Object.entries(PREV_TYPE), d.prevType)}</div>
-            <div class="q-sub" id="q-side" ${d.prevType === 'inside' ? 'hidden' : ''}><span>Level engaged</span>${seg('prevSide', Object.entries(PREV_SIDE), d.prevSide)}</div>
-            <div class="q-sub"><span>Closed in the</span>${seg('prevClose', Object.entries(PREV_CLOSE), d.prevClose)}</div></div>`)}
+            <div class="q-sub" id="q-side" ${d.prevType === 'inside' ? 'hidden' : ''}><span>Level engaged</span>${seg('prevSide', Object.entries(PREV_SIDE), d.prevSide)}</div></div>`)}
           ${qrow(2, 'Daily bias', seg('bias', Object.entries(BIAS), d.bias, 'pn'))}
           ${qrow(3, 'Profile expected', seg('profile', Object.entries(PROFILES), d.profile))}
           ${qrow(4, 'SMT at the key level: which index failed?', chips('smt', SMT_OPTS, d.smt))}
           ${qrow(5, 'Invalidation level', `<input class="q-in mono" type="text" inputmode="decimal" data-f="inval" value="${esc(d.inval)}" placeholder="One price, e.g. 30,461.7">`)}
-          ${qrow(6, 'Plan', `<div class="q-plan">
-            ${planField('planEntry', 'Entry trigger', d.planEntry, '5m CISD after 9:30')}
-            ${planField('planStop', 'Stop', d.planStop, 'Above the high of day')}
-            ${planField('planPartial', 'Partial', d.planPartial, '2R, before the 1H FVG')}
-            ${planField('planTarget', 'Target', d.planTarget, 'PDL')}</div>`)}
+          ${qrow(6, 'Draw: the level you expect price to reach', `<input class="q-in mono" type="text" inputmode="decimal" data-f="draw" value="${esc(d.draw || '')}" placeholder="One price, e.g. 30,091.1">`)}
         </ol>
       </section>
 
@@ -1064,12 +1077,12 @@ async function viewForm(id) {
           <div class="fld wide"><span>Entry timeframe</span>${seg('entryTf', [['15m', '15m'], ['5m', '5m'], ['3m', '3m']], d.entryTf || '')}</div>
           ${numField('entry', 'Entry price', d.entry)}
           ${numField('stop', 'Stop loss', d.stop)}
-          ${numField('target', 'Target', d.target)}
+          ${numField('target', 'Target', d.target, 'Leave empty to use the draw')}
           ${numField('exit', 'Exit price (average)', d.exit, 'Not used once exits are listed under Management')}
           ${numField('riskUsd', 'Risk ($)', d.riskUsd, `${st.riskPct}% of $${Number(st.accountSize).toLocaleString('en-US')}`)}
           ${numField('size', 'Size (lots)', d.size)}
           ${numField('pnl', 'P&L from broker ($)', d.pnl, 'Optional: overrides R × risk')}
-          ${numField('rOverride', 'Result in R (manual)', d.rOverride, 'Optional: overrides everything')}
+          ${has(d.rOverride) ? numField('rOverride', 'Result in R (manual)', d.rOverride, 'Clear it to use the exits instead') : ''}
         </div>
       </section>
 
@@ -1085,14 +1098,8 @@ async function viewForm(id) {
       </section>
 
       <section class="card fs tr-only">
-        <h2>Process</h2>
-        <div class="checks">${CHECKS.map(([k, l]) => `<label class="check"><input type="checkbox" data-check="${k}" ${d.checks[k] ? 'checked' : ''}>${esc(l)}</label>`).join('')}</div>
-        <div class="stack">
-          <div class="fgrid">
-            <div class="fld"><span>How calm was I? (1–5)</span>${seg('emotion', [['1', '1'], ['2', '2'], ['3', '3'], ['4', '4'], ['5', '5']], String(d.emotion || ''))}</div>
-          </div>
-          <div><p class="sub-h">Mistakes</p>${chips('mistakes', MISTAKES, d.mistakes, 'bad')}</div>
-        </div>
+        <div class="sec-h"><div><h2>Mistakes</h2><p class="sec-sub">Tag what you did wrong, if anything. Each tag is costed on the dashboard.</p></div></div>
+        ${chips('mistakes', MISTAKES, d.mistakes, 'bad')}
       </section>
 
       <section class="card fs nt-only">
@@ -1112,17 +1119,10 @@ async function viewForm(id) {
               <input class="q-in" type="text" data-f="failSign" value="${esc(d.failSign)}" placeholder="First sign it was failing">
               <input class="q-in q-time mono" type="time" data-f="failTime" value="${esc(d.failTime)}" aria-label="When (ET)">
             </div>`)}
-          ${qrow(3, 'Did I follow the plan?', seg('followed', [['yes', 'Yes'], ['no', 'No']], d.followed === true ? 'yes' : d.followed === false ? 'no' : '', 'pn'))}
-          ${qrow(4, 'One sentence of lesson. Only one.', `<input class="q-in" type="text" maxlength="180" data-f="lesson" value="${esc(d.lesson)}" placeholder="The one thing to remember from today">`)}
+          ${qrow(3, 'Was the draw reached?', seg('drawHit', [['yes', 'Reached'], ['no', 'Not reached']], d.drawHit || '', 'pn'))}
+          ${qrow(4, 'Did I follow my rules?', seg('followed', [['yes', 'Yes'], ['no', 'No']], d.followed === true ? 'yes' : d.followed === false ? 'no' : '', 'pn'))}
+          ${qrow(5, 'One sentence of lesson. Only one.', `<input class="q-in" type="text" maxlength="180" data-f="lesson" value="${esc(d.lesson)}" placeholder="The one thing to remember from today">`)}
         </ol>
-      </section>
-
-      <section class="card fs">
-        <h2>Review</h2>
-        <div class="tr-only" style="margin-bottom:16px">
-          <div class="fld"><span>Would I take this trade again without knowing the outcome?</span>${seg('takeAgain', [['yes', 'Yes'], ['no', 'No']], d.takeAgain, 'pn')}</div>
-        </div>
-        <div id="review"></div>
       </section>
 
       <section class="card fs">
@@ -1146,10 +1146,10 @@ async function viewForm(id) {
 
   const f = $('#f');
   const refresh = () => {
-    $('#preview').innerHTML = previewHTML(d); renderReview(form);
+    $('#preview').innerHTML = previewHTML(d);
     const pn = countDone(PRE_DONE, d), qn = countDone(POST_DONE, d);
     $('#pre-n').textContent = pn + '/6'; $('#pre-n').classList.toggle('pos', pn === 6);
-    $('#post-n').textContent = qn + '/4'; $('#post-n').classList.toggle('pos', qn === 4);
+    $('#post-n').textContent = qn + '/5'; $('#post-n').classList.toggle('pos', qn === 5);
   };
   // exits: size, price and reason per partial
   const exitMeta = () => {
@@ -1226,7 +1226,6 @@ async function viewForm(id) {
     $$('button', g).forEach(x => x.setAttribute('aria-pressed', String(x === b)));
     if (k === 'followed') d.followed = v === 'yes';
     else if (k === 'missed') d.missed = v === 'yes';
-    else if (k === 'emotion') d[k] = Number(v);
     else d[k] = v;
     if (k === 'prevType') $('#q-side').hidden = v === 'inside';
     if (k === 'stopMgmt' && v === 'widened' && !d.mistakes.includes(MISTAKES[0])) {   // moving the stop away is always a tagged mistake
@@ -1249,7 +1248,6 @@ async function viewForm(id) {
     refresh();
   }));
   $$('[data-f]', f).forEach(inp => inp.addEventListener('input', () => { d[inp.dataset.f] = inp.value; if (inp.dataset.f === 'entry' || inp.dataset.f === 'stop') exitMeta(); refresh(); }));
-  $$('[data-check]', f).forEach(c => c.addEventListener('change', () => { d.checks[c.dataset.check] = c.checked; }));
 
   // screenshots
   const addFiles = async files => {
@@ -1300,10 +1298,6 @@ async function viewForm(id) {
 function qrow(n, q, ctrl) {
   return `<li class="q-row"><span class="q-num mono">${pad2(n)}</span><div class="q-body"><p class="q-title">${q}</p><div class="q-ctrl">${ctrl}</div></div></li>`;
 }
-function planField(k, label, v, ph) {
-  return `<label class="fld"><span>${esc(label)}</span><input type="text" data-f="${k}" value="${esc(v)}" placeholder="${esc(ph)}"></label>`;
-}
-
 function numField(k, label, v, hint = '') {
   return `<label class="fld"><span>${esc(label)}</span><input type="number" step="any" inputmode="decimal" data-f="${k}" value="${esc(v ?? '')}">${hint ? `<span class="hint">${esc(hint)}</span>` : ''}</label>`;
 }
@@ -1311,7 +1305,7 @@ function numField(k, label, v, hint = '') {
 function sessionPV(d) {
   const pn = countDone(PRE_DONE, d), qn = countDone(POST_DONE, d);
   const bar = (n, of) => `<span class="pv-dots">${Array.from({ length: of }, (_, i) => `<i class="${i < n ? 'on' : ''}"></i>`).join('')}</span>`;
-  return `<div class="pv-session"><div><span class="small muted">Before 9:30</span>${bar(pn, 6)}</div><div><span class="small muted">After the session</span>${bar(qn, 4)}</div></div>`;
+  return `<div class="pv-session"><div><span class="small muted">Before 9:30</span>${bar(pn, 6)}</div><div><span class="small muted">After the session</span>${bar(qn, 5)}</div></div>`;
 }
 
 function previewHTML(d) {
@@ -1322,7 +1316,7 @@ function previewCore(d) {
     return `<h2>Summary</h2><div class="pv-big mono muted">pass</div>
       <p class="small muted" style="margin:8px 0 0">${fmtDate(d.date)} · ${weekday(d.date)}. No-trade days count toward your routine and discipline, not your P&amp;L.</p>`;
   }
-  const e = num(d.entry), s = num(d.stop), tg = num(d.target);
+  const e = num(d.entry), s = num(d.stop), tg = num(d.target) ?? (roomR(d) != null ? price(d.draw) : null);
   const stopPts = e != null && s != null ? Math.abs(e - s) : null;
   const planned = stopPts && tg != null ? (d.dir === 'short' ? e - tg : tg - e) / stopPts : null;
   const ppl = instrPPL(d.instrument), risk = num(d.riskUsd);
@@ -1331,26 +1325,16 @@ function previewCore(d) {
   let warn = '';
   if (e != null && s != null && ((d.dir === 'long' && s >= e) || (d.dir === 'short' && s <= e))) warn = `Your stop is on the wrong side of entry for a ${d.dir}.`;
   else if (exitRows(d).length && exitsPct(d) > 100.5) warn = `Exits add up to ${exitsPct(d)}% of the position.`;
-  else if (planned != null && planned < 2) warn = `Planned reward is ${planned.toFixed(2)}R, below the 2R baseline.`;
+  else if (planned != null && planned < 2) warn = `${num(d.target) != null ? 'Planned reward' : 'Room to the draw'} is ${planned.toFixed(2)}R, below the 2R baseline.`;
   return `<h2>Live preview</h2>
     <dl class="kv">
       <div><dt>Stop distance</dt><dd>${stopPts != null ? stopPts.toFixed(2) + ' pts' : '—'}</dd></div>
-      <div><dt>Planned</dt><dd>${planned != null ? planned.toFixed(2) + 'R' : '—'}</dd></div>
+      <div><dt>${num(d.target) != null ? 'Planned' : 'Room to the draw'}</dt><dd>${planned != null ? planned.toFixed(2) + 'R' : '—'}</dd></div>
       <div><dt>Suggested size</dt><dd>${lots != null ? lots.toFixed(2) + ' lots' : '—'}</dd></div>
       <div><dt>Risk</dt><dd>${risk != null ? '$' + risk.toFixed(2) : '—'}</dd></div>
     </dl>
     <div class="pv-result"><span class="small muted">Result</span><span class="pv-big mono ${cls(r)}">${r == null ? `<span class="muted">${exitRows(d).length && exitsPct(d) < 99.5 ? exitsPct(d) + '% closed' : 'open'}</span>` : fmtR(r)}</span><span class="mono ${cls(p)}">${fmtUsd(p)}</span></div>
     ${warn ? `<p class="pv-warn">${esc(warn)}</p>` : ''}`;
-}
-
-function renderReview(form) {
-  const d = form.d, el = $('#review');
-  if (!el) return;
-  const key = reviewKey(d);
-  if (!key) { el.innerHTML = '<p class="empty" style="margin:0">Add the exit price (or a manual R) and the questions for this outcome appear here.</p>'; return; }
-  el.innerHTML = `<p class="q-branch muted">Questions for a <strong>${esc(Q_LABEL[key].toLowerCase())}</strong></p>
-    <div class="q-list">${Q[key].map((q, i) => `<label>${esc(q)}<textarea rows="2" data-q="${i}">${esc(d.review[q] || '')}</textarea></label>`).join('')}</div>`;
-  $$('[data-q]', el).forEach(ta => ta.addEventListener('input', () => { d.review[Q[key][+ta.dataset.q]] = ta.value; }));
 }
 
 async function compress(file) {
@@ -1569,10 +1553,11 @@ async function exportJSON() {
 }
 
 function exportCSV() {
-  const cols = ['date', 'time', 'kind', 'acct', 'instrument', 'dir', 'entryTf', 'prevDir', 'prevType', 'prevSide', 'prevClose', 'bias', 'profile', 'smt', 'inval', 'planEntry', 'planStop', 'planPartial', 'planTarget', 'actual', 'biasOk', 'failSign', 'failTime', 'lesson', 'entry', 'stop', 'target', 'exit', 'stopMgmt', 'exits', 'log', 'size', 'riskUsd', 'R', 'pnlUsd', 'followed', 'takeAgain', 'emotion', 'mistakes', 'reasons', 'missed', 'notes'];
+  const cols = ['date', 'time', 'kind', 'acct', 'instrument', 'dir', 'entryTf', 'prevType', 'prevSide', 'bias', 'profile', 'smt', 'inval', 'draw', 'actual', 'biasOk', 'drawHit', 'failSign', 'failTime', 'lesson', 'entry', 'stop', 'target', 'exit', 'stopMgmt', 'exits', 'log', 'size', 'riskUsd', 'R', 'roomR', 'pnlUsd', 'followed', 'mistakes', 'reasons', 'missed', 'notes'];
   const q = v => { const s = v == null ? '' : String(v); return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
   const rows = [...S.trades].sort(byTime).map(t => cols.map(c => {
     if (c === 'R') { const r = tradeR(t); return r == null ? '' : r.toFixed(3); }
+    if (c === 'roomR') { const r = roomR(t); return r == null ? '' : r.toFixed(2); }
     if (c === 'pnlUsd') { const p = tradePnl(t); return p == null ? '' : p.toFixed(2); }
     if (c === 'mistakes' || c === 'reasons' || c === 'smt') return (t[c] || []).join('; ');
     if (c === 'profile' || c === 'actual') return profLabel(t[c]);
@@ -1614,15 +1599,14 @@ function sampleData() {
     'A read against yesterday’s candle needs more proof than one SMT.', 'Took the partial at 2R and let the runner work.', 'Stop stays where it was placed.',
     'No 9:30 delivery means no trade. Walked away on time.', 'Checked the feed before reading 7H candles.'];
   // pre/post-session read
-  const session = (bias, good) => {
-    const prevDir = rnd() < 0.5 ? 'up' : 'down';
-    const x = { prevDir, prevType: pick(['manip', 'manip', 'closure', 'inside']), prevSide: pick(['high', 'low']), prevClose: pick(['upper', 'middle', 'lower']), bias };
+  const session = (bias, good, draw = '') => {
+    const x = { prevType: pick(['manip', 'manip', 'closure', 'inside']), prevSide: pick(['high', 'low']), bias, draw };
     const pRight = (x.prevType === 'inside' ? 0.45 : 0.64) + (good ? 0.12 : -0.12);
     const ok = rnd() < pRight;
     const exp = pick(['18', 'london', 'london', 'nyrev']);
     Object.assign(x, {
       profile: exp, smt: [pick(['ES', 'NQ', 'YM', 'None'])], inval: String(30000 + Math.round(rnd() * 900)),
-      planEntry: '5m CISD after 9:30', planStop: 'Above the manipulation', planPartial: '2R', planTarget: bias === 'bear' ? 'PDL' : 'PDH',
+      drawHit: bias === 'none' ? '' : rnd() < (ok ? 0.6 : 0.12) ? 'yes' : 'no',
       actual: ok && rnd() < 0.8 ? exp : pick(['18', 'london', 'nyrev', 'other']), biasOk: ok ? 'right' : 'wrong',
       failSign: ok ? '' : pick(['15m closed through the invalidation', 'Correlated index confirmed the high', '9:30 expanded the wrong way']),
       failTime: ok ? '' : pick(['08:45', '09:35', '09:50', '10:15']), lesson: rnd() < 0.7 ? pick(LESSONS) : '',
@@ -1637,7 +1621,7 @@ function sampleData() {
     const ds = isoDay(d);
     if (rnd() < 0.16) {
       const missed = rnd() < 0.2;
-      out.push({ id: uid(), sample: true, kind: 'notrade', acct: 'backtest', date: ds, time: '', ...session(pick(['bull', 'bear', 'none']), !missed), followed: !missed, reasons: [pick(NOTRADE_REASONS)], missed, review: {}, notes: 'Sample entry.', images: [], mistakes: [], checks: {}, created: Date.now() });
+      out.push({ id: uid(), sample: true, kind: 'notrade', acct: 'backtest', date: ds, time: '', ...session(pick(['bull', 'bear', 'none']), !missed), followed: !missed, reasons: [pick(NOTRADE_REASONS)], missed, review: {}, notes: 'Sample entry.', images: [], mistakes: [], created: Date.now() });
       continue;
     }
     const dir = rnd() < 0.6 ? 'long' : 'short';
@@ -1653,14 +1637,13 @@ function sampleData() {
     const runner = R > 2.2;   // took half off at 2R and let the rest run
     out.push({
       id: uid(), sample: true, kind: 'trade', acct: 'backtest', date: ds, time: `${pad2(hh)}:${pad2(mm)}`,
-      instrument: 'US100.cash', dir, entryTf: pick(['5m', '5m', '15m', '3m']), ...session(dir === 'long' ? 'bull' : 'bear', R > 0),
+      instrument: 'US100.cash', dir, entryTf: pick(['5m', '5m', '15m', '3m']), ...session(dir === 'long' ? 'bull' : 'bear', R > 0, String(px(pick([1.4, 2.2, 2.6, 3.1, 3.8])))),
       entry, stop: dir === 'long' ? entry - stopPts : entry + stopPts, target: dir === 'long' ? entry + 2 * stopPts : entry - 2 * stopPts,
       exit: runner ? '' : px(R), exits: runner ? [{ pct: 50, price: px(2), why: 'Partial at target' }, { pct: 50, price: px(2 * R - 2), why: 'Trailed out' }] : [],
       stopMgmt: !followed && R < 0 ? 'widened' : runner ? 'trailed' : R === 0 ? 'be' : 'held',
       log: [{ time: '08:10', kind: 'read', dir: dir === 'long' ? 'bull' : 'bear', text: 'London made the extreme and held away from it.' }, { time: `${pad2(hh)}:${pad2(mm)}`, kind: 'entry', dir: '', text: 'CISD on the pullback.' }],
       size: +(50 / stopPts).toFixed(2), riskUsd: 50, pnl: '', rOverride: '',
-      checks: { bias: true, cisd15: true, sig5: rnd() < 0.9, room: true, open: rnd() < 0.75 }, followed, takeAgain: followed ? 'yes' : 'no',
-      emotion: 2 + Math.floor(rnd() * 4), mistakes: followed ? [] : [pick(MISTAKES.slice(0, 6))], reasons: [], missed: false, review: {},
+      followed, mistakes: followed ? [] : [pick(MISTAKES.slice(0, 6))], reasons: [], missed: false, review: {},
       notes: 'Sample entry.', images: [], created: Date.now(),
     });
   }
