@@ -971,7 +971,7 @@ function logBlock(t) {
   const rows = t.log || [];
   const dir = x => LOG_HAS_DIR(x.kind) && BIAS[x.dir] ? `<span class="${x.dir === 'bull' ? 'pos' : x.dir === 'bear' ? 'neg' : 'muted'}">${esc(BIAS[x.dir])}</span>` : '';
   return `<div class="card-h"><h2>How the day unfolded</h2><span class="muted small">${plural(rows.length, 'step')}</span></div>` + (rows.length
-    ? `<ol class="tl">${rows.map(x => `<li><span class="tl-t mono">${esc(x.time || '—')}</span><div><div class="tl-k">${tag(LOG_KIND[x.kind] || LOG_KIND.note, x.kind === 'inval' ? 'bad' : '')}${dir(x)}</div>${has(x.text) ? `<p>${esc(x.text)}</p>` : ''}</div></li>`).join('')}</ol>`
+    ? `<ol class="tl">${rows.map((x, i) => `<li><span class="tl-t mono">${pad2(i + 1)}</span><div><div class="tl-k">${tag(LOG_KIND[x.kind] || LOG_KIND.note, x.kind === 'inval' ? 'bad' : '')}${dir(x)}</div>${has(x.text) ? `<p>${esc(x.text)}</p>` : ''}</div></li>`).join('')}</ol>`
     : `<p class="empty">No steps logged. <a class="link" href="#edit/${t.id}">Add them</a></p>`);
 }
 function mgmtBlock(t) {
@@ -1066,7 +1066,7 @@ async function viewForm(id) {
       </section>
 
       <section class="card fs">
-        <div class="sec-h"><div><h2>How the day unfolded</h2><p class="sec-sub">One line per change of mind or action, in order. A read that got invalidated stays where it is; add the new one under it.</p></div></div>
+        <div class="sec-h"><div><h2>How the day unfolded</h2><p class="sec-sub">One line per change of mind or action, in the order it happened. A read that got invalidated stays where it is; add the new one under it.</p></div></div>
         <div class="lines" id="log"></div>
         <button type="button" class="btn small" id="log-add">Add a step</button>
       </section>
@@ -1187,7 +1187,6 @@ async function viewForm(id) {
   // the day's timeline: reads, invalidations, entries, management
   const renderLog = () => {
     $('#log').innerHTML = d.log.map((x, i) => `<div class="line log" data-i="${i}">
-      <input type="time" data-l="time" value="${esc(x.time || '')}" aria-label="Time (ET)">
       <select data-l="kind" aria-label="Kind of step">${Object.entries(LOG_KIND).map(([k, l]) => `<option value="${k}" ${k === x.kind ? 'selected' : ''}>${l}</option>`).join('')}</select>
       <select data-l="dir" aria-label="Direction of the read" ${LOG_HAS_DIR(x.kind) ? '' : 'disabled'}><option value="">Direction</option>${Object.entries(BIAS).map(([k, l]) => `<option value="${k}" ${LOG_HAS_DIR(x.kind) && k === x.dir ? 'selected' : ''}>${l}</option>`).join('')}</select>
       <input type="text" data-l="text" value="${esc(x.text || '')}" placeholder="${x.kind === 'inval' ? 'What invalidated it' : LOG_HAS_DIR(x.kind) ? 'What you saw, and why' : 'What you did'}" aria-label="Description">
@@ -1196,9 +1195,9 @@ async function viewForm(id) {
   $('#log-add').addEventListener('click', () => {
     const NEXT = { read: 'inval', inval: 'flip', flip: 'entry', entry: 'manage', manage: 'exit', exit: 'note', note: 'note' };
     const last = d.log[d.log.length - 1];
-    d.log.push(last ? { time: '', kind: NEXT[last.kind], dir: '', text: '' } : { time: '', kind: 'read', dir: d.bias || '', text: '' });
+    d.log.push(last ? { kind: NEXT[last.kind], dir: '', text: '' } : { kind: 'read', dir: d.bias || '', text: '' });
     renderLog();
-    $('#log .line:last-child [data-l="time"]').focus();
+    $('#log .line:last-child [data-l="text"]').focus();
   });
   $('#log').addEventListener('input', e => {
     const row = e.target.closest('.line'), k = e.target.dataset.l;
@@ -1361,8 +1360,7 @@ async function saveForm(form) {
     }
     d.images = form.imgs.map(i => i.id);
     d.exits = (d.exits || []).filter(x => has(x.pct) || has(x.price));
-    d.log = (d.log || []).filter(x => has(x.text) || has(x.time)).map((x, i) => ({ ...x, i }))
-      .sort((a, b) => a.time && b.time ? a.time.localeCompare(b.time) || a.i - b.i : a.i - b.i).map(({ i, ...x }) => x);
+    d.log = (d.log || []).filter(x => has(x.text)).map(({ time, ...x }) => x);   // steps stay in the order they were written
     d.updated = Date.now();
     await DB.put('trades', d);
     const i = S.trades.findIndex(t => t.id === d.id);
@@ -1564,7 +1562,7 @@ function exportCSV() {
     if (c === 'exit') return exitRows(t).length ? exitsAvg(t).toFixed(2) : t.exit;
     if (c === 'stopMgmt') return STOP_MGMT[t.stopMgmt] || '';
     if (c === 'exits') return exitRows(t).map(x => `${x.pct}% @ ${x.price}${x.why ? ' (' + x.why + ')' : ''}`).join('; ');
-    if (c === 'log') return (t.log || []).map(x => [x.time, LOG_KIND[x.kind], LOG_HAS_DIR(x.kind) ? BIAS[x.dir] : '', x.text].filter(Boolean).join(' · ')).join(' | ');
+    if (c === 'log') return (t.log || []).map(x => [LOG_KIND[x.kind], LOG_HAS_DIR(x.kind) ? BIAS[x.dir] : '', x.text].filter(Boolean).join(' · ')).join(' | ');
     return t[c];
   }).map(q).join(','));
   download(`session-ledger-trades-${today()}.csv`, new Blob([cols.join(',') + '\n' + rows.join('\n')], { type: 'text/csv' }));
@@ -1641,7 +1639,7 @@ function sampleData() {
       entry, stop: dir === 'long' ? entry - stopPts : entry + stopPts, target: dir === 'long' ? entry + 2 * stopPts : entry - 2 * stopPts,
       exit: runner ? '' : px(R), exits: runner ? [{ pct: 50, price: px(2), why: 'Partial at target' }, { pct: 50, price: px(2 * R - 2), why: 'Trailed out' }] : [],
       stopMgmt: !followed && R < 0 ? 'widened' : runner ? 'trailed' : R === 0 ? 'be' : 'held',
-      log: [{ time: '08:10', kind: 'read', dir: dir === 'long' ? 'bull' : 'bear', text: 'London made the extreme and held away from it.' }, { time: `${pad2(hh)}:${pad2(mm)}`, kind: 'entry', dir: '', text: 'CISD on the pullback.' }],
+      log: [{ kind: 'read', dir: dir === 'long' ? 'bull' : 'bear', text: 'London made the extreme and held away from it.' }, { kind: 'entry', dir: '', text: 'CISD on the pullback.' }],
       size: +(50 / stopPts).toFixed(2), riskUsd: 50, pnl: '', rOverride: '',
       followed, mistakes: followed ? [] : [pick(MISTAKES.slice(0, 6))], reasons: [], missed: false, review: {},
       notes: 'Sample entry.', images: [], created: Date.now(),
