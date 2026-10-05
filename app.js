@@ -7,7 +7,11 @@
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-const num = v => (v === '' || v == null || isNaN(+v)) ? null : +v;
+const num = v => {
+  if (v === '' || v == null) return null;
+  const n = +String(v).trim().replace(/^(-?\d+),(\d+)$/, '$1.$2');   // accepts 31218,5 as well as 31218.5
+  return isNaN(n) ? null : n;
+};
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
 const sgn = v => v > 0 ? '+' : v < 0 ? '−' : '';
 const fmtR = (r, d = 2) => r == null ? '—' : sgn(r) + Math.abs(r).toFixed(d) + 'R';
@@ -330,11 +334,26 @@ function tradeR(t) {
     return rs.some(r => r == null) ? null : rows.reduce((a, x, i) => a + num(x.pct) / 100 * rs[i], 0);
   }
   const e = num(t.entry), s = num(t.stop), x = num(t.exit);
-  if (e == null || s == null || x == null) return null;
-  const risk = Math.abs(e - s);
-  if (!risk) return null;
-  return (t.dir === 'short' ? e - x : x - e) / risk;
+  const pts = e != null && s != null ? Math.abs(e - s) : 0;
+  if (x != null && pts) return (t.dir === 'short' ? e - x : x - e) / pts;
+  // no exit price: the broker P&L is enough, measured against the dollars actually at risk
+  const p = num(t.pnl), z = sizeOf(t), ppl = instrPPL(t.instrument);
+  const atRisk = z && pts && ppl ? z * pts * ppl : num(t.riskUsd);
+  return p != null && atRisk ? p / atRisk : null;
 }
+// lots that risk exactly the planned dollars over the stop distance, rounded down to the 0.01 lot step
+function suggestedLots(t) {
+  const e = num(t.entry), s = num(t.stop), ppl = instrPPL(t.instrument), risk = num(t.riskUsd);
+  const pts = e != null && s != null ? Math.abs(e - s) : 0;
+  return pts && risk && ppl ? Math.floor(risk / (pts * ppl) * 100) / 100 : null;
+}
+const sizeOf = t => num(t.size) ?? suggestedLots(t);
+// the average exit implied by the broker P&L, for trades logged without an exit price
+function pnlExit(t) {
+  const p = num(t.pnl), e = num(t.entry), z = sizeOf(t), ppl = instrPPL(t.instrument);
+  return p != null && e != null && z && ppl ? e + (t.dir === 'short' ? -1 : 1) * p / (z * ppl) : null;
+}
+const shownExit = t => exitRows(t).length ? exitsAvg(t).toFixed(2) : has(t.exit) ? t.exit : pnlExit(t) != null ? pnlExit(t).toFixed(2) : '';
 function tradePnl(t) {
   if (!t || t.kind !== 'trade') return null;
   const p = num(t.pnl);
@@ -879,7 +898,7 @@ async function viewDetail(id) {
       ${isNT ? `<div class="result-big muted">pass</div><p class="small muted" style="margin:0">${t.missed ? tag('missed a valid trade', 'bad') : tag('good pass', 'good')}</p>`
         : `<div class="result-big ${cls(r)}">${r == null ? '<span class="muted">open</span>' : fmtR(r)}</div>
            <div class="mono ${cls(p)}">${fmtUsd(p)}</div>
-           <p class="small muted" style="margin:10px 0 0">${r == null ? 'Add an exit price to close it.' : outcome(r) === 'win' ? 'Win' : outcome(r) === 'loss' ? 'Loss' : 'Breakeven'}${plannedTxt}</p>`}
+           <p class="small muted" style="margin:10px 0 0">${r == null ? 'Add an exit price or the broker P&amp;L to close it.' : outcome(r) === 'win' ? 'Win' : outcome(r) === 'loss' ? 'Loss' : 'Breakeven'}${plannedTxt}</p>`}
     </article>
     ${isNT ? `
     <article class="card span2">
@@ -892,9 +911,9 @@ async function viewDetail(id) {
         <div><dt>Entry</dt><dd>${esc(t.entry || '—')}</dd></div>
         <div><dt>Stop</dt><dd>${esc(t.stop || '—')}</dd></div>
         <div><dt>Target</dt><dd>${esc(t.target || '—')}</dd></div>
-        <div><dt>Exit${exitRows(t).length ? ' (average)' : ''}</dt><dd>${exitRows(t).length ? exitsAvg(t).toFixed(2) : esc(t.exit || '—')}</dd></div>
+        <div><dt>Exit${exitRows(t).length ? ' (average)' : !has(t.exit) && pnlExit(t) != null ? ' (from P&amp;L)' : ''}</dt><dd>${esc(shownExit(t) || '—')}</dd></div>
         <div><dt>Stop distance</dt><dd>${stopPts != null ? stopPts.toFixed(2) + ' pts' : '—'}</dd></div>
-        <div><dt>Size</dt><dd>${esc(t.size || '—')}</dd></div>
+        <div><dt>Size</dt><dd>${sizeOf(t) != null ? esc(sizeOf(t)) + ' lots' : '—'}</dd></div>
         <div><dt>Risk</dt><dd>${num(t.riskUsd) != null ? '$' + num(t.riskUsd).toFixed(2) : '—'}</dd></div>
         <div><dt>Entry time · TF</dt><dd>${t.time ? esc(t.time) + ' ET' : '—'}${t.entryTf ? ' · ' + esc(t.entryTf) : ''}</dd></div>
       </dl>
@@ -1078,10 +1097,10 @@ async function viewForm(id) {
           ${numField('entry', 'Entry price', d.entry)}
           ${numField('stop', 'Stop loss', d.stop)}
           ${numField('target', 'Target', d.target, 'Leave empty to use the draw')}
-          ${numField('exit', 'Exit price (average)', d.exit, 'Not used once exits are listed under Management')}
+          ${numField('exit', 'Exit price (average)', d.exit, 'Or skip it and enter the broker P&L. Not used once exits are listed under Management')}
           ${numField('riskUsd', 'Risk ($)', d.riskUsd, `${st.riskPct}% of $${Number(st.accountSize).toLocaleString('en-US')}`)}
-          ${numField('size', 'Size (lots)', d.size)}
-          ${numField('pnl', 'P&L from broker ($)', d.pnl, 'Optional: overrides R × risk')}
+          ${numField('size', 'Size (lots)', d.size, 'Calculated from risk and stop; type it only if you traded a different size')}
+          ${numField('pnl', 'P&L from broker ($)', d.pnl, 'Enough on its own to close the trade')}
           ${has(d.rOverride) ? numField('rOverride', 'Result in R (manual)', d.rOverride, 'Clear it to use the exits instead') : ''}
         </div>
       </section>
@@ -1147,6 +1166,8 @@ async function viewForm(id) {
   const f = $('#f');
   const refresh = () => {
     $('#preview').innerHTML = previewHTML(d);
+    const sz = $('[data-f="size"]', f), lots = suggestedLots(d);
+    if (sz) sz.placeholder = lots != null ? lots.toFixed(2) + ' (calculated)' : '';
     const pn = countDone(PRE_DONE, d), qn = countDone(POST_DONE, d);
     $('#pre-n').textContent = pn + '/6'; $('#pre-n').classList.toggle('pos', pn === 6);
     $('#post-n').textContent = qn + '/5'; $('#post-n').classList.toggle('pos', qn === 5);
@@ -1319,7 +1340,7 @@ function previewCore(d) {
   const stopPts = e != null && s != null ? Math.abs(e - s) : null;
   const planned = stopPts && tg != null ? (d.dir === 'short' ? e - tg : tg - e) / stopPts : null;
   const ppl = instrPPL(d.instrument), risk = num(d.riskUsd);
-  const lots = stopPts && risk && ppl ? risk / (stopPts * ppl) : null;
+  const lots = suggestedLots(d);
   const r = tradeR(d), p = tradePnl(d);
   let warn = '';
   if (e != null && s != null && ((d.dir === 'long' && s >= e) || (d.dir === 'short' && s <= e))) warn = `Your stop is on the wrong side of entry for a ${d.dir}.`;
@@ -1359,6 +1380,7 @@ async function saveForm(form) {
       if (im.isNew || im.dirty) await DB.put('images', { id: im.id, tradeId: d.id, blob: im.blob, label: im.label, created: im.created || Date.now() });
     }
     d.images = form.imgs.map(i => i.id);
+    if (d.kind === 'trade' && !has(d.size) && suggestedLots(d) != null) d.size = suggestedLots(d);
     d.exits = (d.exits || []).filter(x => has(x.pct) || has(x.price));
     d.log = (d.log || []).filter(x => has(x.text)).map(({ time, ...x }) => x);   // steps stay in the order they were written
     d.updated = Date.now();
@@ -1559,7 +1581,7 @@ function exportCSV() {
     if (c === 'pnlUsd') { const p = tradePnl(t); return p == null ? '' : p.toFixed(2); }
     if (c === 'mistakes' || c === 'reasons' || c === 'smt') return (t[c] || []).join('; ');
     if (c === 'profile' || c === 'actual') return profLabel(t[c]);
-    if (c === 'exit') return exitRows(t).length ? exitsAvg(t).toFixed(2) : t.exit;
+    if (c === 'exit') return shownExit(t);
     if (c === 'stopMgmt') return STOP_MGMT[t.stopMgmt] || '';
     if (c === 'exits') return exitRows(t).map(x => `${x.pct}% @ ${x.price}${x.why ? ' (' + x.why + ')' : ''}`).join('; ');
     if (c === 'log') return (t.log || []).map(x => [LOG_KIND[x.kind], LOG_HAS_DIR(x.kind) ? BIAS[x.dir] : '', x.text].filter(Boolean).join(' · ')).join(' | ');
