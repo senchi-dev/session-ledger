@@ -457,3 +457,20 @@ q.lesson, .lessons q { quotes: "“" "”"; font-style: italic; color: var(--ink
 .ex { width: 100%; border-collapse: collapse; margin-top: 14px; font-size: 13px; }
 .ex td { padding: 7px 8px 7px 0; border-top: 1px solid var(--rule); white-space: nowrap; }
 .ex td:last-child { white-space: normal; padding-right: 0; }
+
+/* ── sessions with several trades ── */
+.trades { display: grid; gap: 14px; }
+.trades:not(:empty) { margin-bottom: 14px; }
+.trade { display: grid; gap: 18px; padding: 16px; border: 1px solid var(--rule-2); border-radius: var(--r-sm); background: var(--surface-2); }
+.trade-h { display: flex; align-items: center; gap: 12px; }
+.trade-h h3 { margin: 0; font-size: 14px; font-weight: 600; letter-spacing: -.01em; }
+.trade-sum { margin-left: auto; font-size: 12.5px; color: var(--muted); text-align: right; }
+.trade-sum b { font-weight: 500; }
+.t-review .q-list { display: grid; gap: 12px; }
+.trade-d .card-h h2 { display: flex; flex-wrap: wrap; gap: 6px; align-items: baseline; }
+.trade-r { font-size: 20px; letter-spacing: -.02em; white-space: nowrap; }
+.trade-r .small { font-size: 12.5px; margin-left: 6px; }
+.trade-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 28px; margin-top: 6px; }
+@media (max-width: 960px) { .trade-grid { grid-template-columns: minmax(0, 1fr); gap: 20px; } }
+.pv-trades { list-style: none; margin: 4px 0 12px; padding: 0; display: grid; gap: 6px; font-size: 13px; }
+.pv-trades li { display: flex; justify-content: space-between; gap: 10px; padding-bottom: 6px; border-bottom: 1px solid var(--rule); }

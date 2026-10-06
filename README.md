@@ -1,6 +1,6 @@
 # Session Ledger
 
-A minimalist, local-first trading journal. Every entry carries a fixed pre-session read (written before 9:30) and a four-question post-session review, so bias accuracy can be measured over time. Log trades and no-trade days, attach chart screenshots, and get R-based statistics: expectancy, win rate, profit factor, drawdown, equity curve, P&L calendar, and breakdowns by weekday, daily profile, entry time, rule adherence and mistakes.
+A minimalist, local-first trading journal organised by session: each day holds one pre-9:30 read (yesterday's candle, bias, expected profile, SMT, invalidation, draw), a timeline of how the day unfolded, any number of trades, and a five-question review after the close. Each trade carries its own execution, partial exits, stop handling, mistakes and the AMTrades win/loss review questions; days without a trade get the no-trade questions. Statistics are R-based: expectancy, win rate, profit factor, drawdown, equity curve, P&L calendar, and breakdowns by profile, entry time and timeframe, stop handling, room to the draw and rule adherence, with the read graded once per day.
 
 **Local first, with an optional cloud copy.** Entries and screenshots are written to IndexedDB on the device you use, so the journal works offline. Sign in from *Settings → Cloud sync* and every change is also copied to your own Supabase project (Postgres plus a private storage bucket), protected by row-level security so only your account can read it. *Settings → Export full backup* still gives you a file you hold yourself.
 
