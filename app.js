@@ -38,7 +38,7 @@ const PREV_TYPE = { manip: 'Manipulation', closure: 'Closure through', inside: '
 const PREV_SIDE = { high: 'The high', low: 'The low' };
 const PREV_CLOSE = { upper: 'Upper third', middle: 'Middle', lower: 'Lower third' };
 const SMT_OPTS = ['ES', 'NQ', 'YM', 'None'];
-const STOP_MGMT = { held: 'Left where placed', be: 'Moved to break-even', trailed: 'Trailed', widened: 'Moved away' };
+const STOP_MGMT = { held: 'Left where placed', tightened: 'Moved closer', be: 'Moved to break-even', trailed: 'Trailed', widened: 'Moved away' };
 const EXIT_WHY = ['Partial at target', 'Final target', 'Trailed out', 'Break-even stop', 'Stopped out', 'Manual', 'Time exit'];
 const LOG_KIND = { read: 'Read', inval: 'Invalidated', flip: 'New read', entry: 'Entry', manage: 'Managed', exit: 'Exit', note: 'Note' };
 const LOG_HAS_DIR = k => k === 'read' || k === 'flip';
@@ -115,7 +115,7 @@ const DEFAULT_SETTINGS = {
   ],
 };
 const S = { sessions: [], trades: [], settings: { ...DEFAULT_SETTINGS } };   // trades: one row per trade, derived from sessions
-const F = Object.assign({ acct: 'all', period: 'all', instr: 'all' }, prefs.get('filters', {}));
+const F = Object.assign({ acct: 'all', period: 'all', instr: 'all', ver: 'all' }, prefs.get('filters', {}));
 
 async function loadAll() {
   await DB.open();
@@ -503,6 +503,7 @@ function filtered() {
   let list = S.trades;
   if (F.acct !== 'all') list = list.filter(t => t.acct === F.acct);
   if (F.instr !== 'all') list = list.filter(t => t.kind === 'notrade' || t.instrument === F.instr);
+  if (F.ver !== 'all') list = list.filter(t => versionOf(t.date) === +F.ver);
   if (F.period !== 'all') {
     const d = new Date(); d.setDate(d.getDate() - Number(F.period));
     const from = isoDay(d);
@@ -540,14 +541,14 @@ function filterBar() {
   const instrs = [...new Set(S.trades.map(t => t.instrument).filter(Boolean))];
   return seg('acct', [['all', 'All'], ['backtest', 'Backtest'], ['demo', 'Demo'], ['live', 'Live']], F.acct)
     + seg('period', [['30', '30d'], ['90', '90d'], ['all', 'All time']], F.period)
+    + (versions().length > 1 ? `<select class="sel" data-filter="ver" aria-label="Rule version"><option value="all">All versions</option>${versions().map(v => `<option value="${v.n}" ${String(F.ver) === String(v.n) ? 'selected' : ''}>Version ${v.n}</option>`).join('')}</select>` : '')
     + (instrs.length > 1 ? `<select class="sel" data-filter="instr" aria-label="Instrument"><option value="all">All instruments</option>${instrs.map(i => `<option ${F.instr === i ? 'selected' : ''}>${esc(i)}</option>`).join('')}</select>` : '');
 }
 function bindFilters(rerender) {
   $$('.filters [data-seg] button').forEach(b => b.addEventListener('click', () => {
     F[b.parentElement.dataset.seg] = b.dataset.v; prefs.set('filters', F); rerender();
   }));
-  const s = $('.filters [data-filter="instr"]');
-  if (s) s.addEventListener('change', () => { F.instr = s.value; prefs.set('filters', F); rerender(); });
+  $$('.filters [data-filter]').forEach(s => s.addEventListener('change', () => { F[s.dataset.filter] = s.value; prefs.set('filters', F); rerender(); }));
 }
 function sampleBanner() {
   return S.trades.some(t => t.sample)
@@ -576,8 +577,10 @@ function viewDashboard() {
   const month = prefs.get('calMonth', latestMonth(list));
   const pf = st.pf == null ? '—' : st.pf === Infinity ? '∞' : st.pf.toFixed(2);
 
+  const due = checkpointDue();
   app.innerHTML = `
   ${sampleBanner()}
+  ${due ? `<div class="banner"><span>${due} sessions on version ${activeVersion()}: time for a checkpoint.</span><a href="#review/checkpoint">Open the checkpoint</a></div>` : ''}
   <header class="page-head">
     <div><h1>Dashboard</h1><p class="sub">${plural(st.n, 'closed trade')} · ${plural(nts.length, 'no-trade day')}</p></div>
     <div class="filters">${filterBar()}</div>
@@ -593,6 +596,8 @@ function viewDashboard() {
     ${kpi('Rules followed', fmtPct(st.adherence), st.adherence == null ? '' : st.adherence >= .9 ? 'pos' : 'neg', 'target 90% or more')}
     ${kpi('Current streak', st.streak ? `${st.streak.n} ${st.streak.type === 'win' ? 'W' : 'L'}` : '—', st.streak ? (st.streak.type === 'win' ? 'pos' : 'neg') : '', st.streak ? (st.streak.type === 'win' ? 'wins in a row' : 'losses in a row') : 'breakevens ignored')}
   </section>
+
+  ${ftmoCard() ? `<section class="row one">${ftmoCard()}</section>` : ''}
 
   <section class="row">
     <article class="card">
@@ -874,7 +879,7 @@ function viewTrades() {
   ${sampleBanner()}
   <header class="page-head">
     <div><h1>Trades</h1><p class="sub">${list.length} entr${list.length === 1 ? 'y' : 'ies'}${q.day ? ` on ${fmtDate(q.day)} <button type="button" class="chip-x" id="clear-day">clear day</button>` : ''}</p></div>
-    <div class="filters">${filterBar()}</div>
+    <div class="filters">${filterBar()}<a class="btn" href="#import">Import from MT5</a></div>
   </header>
   <div class="toolbar">
     <input class="search" type="search" id="tq" placeholder="Search notes, tags, instrument, review answers…" value="${esc(q.text)}" aria-label="Search entries">
@@ -1549,7 +1554,17 @@ function viewPlaybook() {
       ${pbList(PB_KILL)}
       <p class="pb-foot">Log the entry timeframe on every trade. The dashboard shows results per timeframe.</p>
     </article>
+  </section>
+  <section class="row one">
+    <article class="card">
+      <div class="card-h"><h2>Rule changes</h2><span class="muted small">each change starts a new version; results stay comparable</span></div>
+      <ol class="versions">${versions().map(v => `<li><span class="mono">v${v.n}</span><span class="muted mono">${v.from ? 'from ' + fmtDate(v.from) : 'from the start'}</span><span>${esc(v.change)}</span></li>`).join('')}</ol>
+      <div class="ver-add"><input class="search" id="ver-text" placeholder="The rule you’re changing, in one sentence" aria-label="Rule change"><input type="date" class="sel" id="ver-from" value="${nextDay(today())}" aria-label="Starts on"><button type="button" class="btn" id="ver-go" disabled>Record the change</button></div>
+    </article>
   </section>`;
+  const vt = $('#ver-text'), vg = $('#ver-go');
+  vt.addEventListener('input', () => { vg.disabled = !has(vt.value); });
+  vg.addEventListener('click', async () => { await addVersion(vt.value, $('#ver-from').value || nextDay(today())); toast(`Version ${currentVersion().n} recorded`); viewPlaybook(); });
 }
 
 // ───────────────────────── settings ─────────────────────────
@@ -1580,6 +1595,14 @@ async function viewSettings() {
       <div class="set-actions"><button type="button" class="btn" id="add-inst">Add instrument</button></div>
       <p class="small muted" style="margin:12px 0 0">US100.cash at FTMO: contract size 1, so $1 per point per lot.</p>
     </article>
+    <article class="card">
+      <h2 style="margin-bottom:12px">FTMO account</h2>
+      <div class="set-grid">
+        <div class="fld"><span>Phase</span>${seg('ftmo-phase', Object.entries(FTMO_PHASES).map(([k, [l]]) => [k, l]), (st.ftmo || {}).phase || 'challenge')}</div>
+        ${setField('ftmoInitial', 'Starting balance ($)', (st.ftmo || {}).initial ?? ((st.ftmo || {}).snap || {}).initial ?? 10000)}
+      </div>
+      <p class="small muted" style="margin:14px 0 0">${(st.ftmo || {}).snap ? `Balance ${fmtUsd((st.ftmo.snap.balance))} from the MT5 import of ${esc(st.ftmo.snap.at)}.` : 'The dashboard tracker appears after your first MT5 import.'}</p>
+    </article>
     ${cloudCard(cloud)}
     <article class="card">
       <h2 style="margin-bottom:12px">Backup</h2>
@@ -1599,9 +1622,11 @@ async function viewSettings() {
     </article>
   </section>`;
 
+  $$('[data-seg="ftmo-phase"] button').forEach(b => b.addEventListener('click', async () => { st.ftmo = { ...(st.ftmo || {}), phase: b.dataset.v }; await saveSettings(); toast('Saved'); viewSettings(); }));
   $$('[data-set]').forEach(inp => inp.addEventListener('change', async () => {
     const v = num(inp.value);
     if (v == null || v < 0) { toast('Enter a positive number'); return; }
+    if (inp.dataset.set === 'ftmoInitial') { st.ftmo = { ...(st.ftmo || {}), initial: v }; await saveSettings(); toast('Saved'); return; }
     st[inp.dataset.set] = v; await saveSettings(); toast('Saved'); viewSettings();
   }));
   $$('[data-inst]').forEach(inp => inp.addEventListener('change', async () => {
@@ -1802,6 +1827,8 @@ async function route() {
   else if (view === 'trade') await viewDetail(id);
   else if (view === 'settings') await viewSettings();
   else if (view === 'playbook') viewPlaybook();
+  else if (view === 'import') viewImport();
+  else if (view === 'review') viewReview(id === 'checkpoint' ? 'checkpoint' : 'week', location.hash.split('/')[2]);
   else viewDashboard();
   window.scrollTo(0, 0);
 }

@@ -6,6 +6,10 @@ A minimalist, local-first trading journal organised by session: each day holds o
 
 To set up the cloud copy: run `supabase-setup.sql` in the Supabase SQL editor, set the project URL and publishable key in `CLOUD_CFG` at the top of `app.js`, and add the site address under *Authentication → URL Configuration*.
 
-Plain HTML, CSS and JavaScript, with no build step; the only dependency is the Supabase client, loaded from a CDN. Open `index.html` through any static host (GitHub Pages works).
+**Import from MT5.** Trades → *Import from MT5*, then drop the HTML report exported from MT5 desktop (History tab → right-click → Report → HTML). Each position becomes a trade in its day's session with the stop as placed, partial exits, stop handling and P&L; positions already imported are skipped, and trades you logged by hand are updated rather than duplicated.
+
+**Review.** A weekly page (the week's sessions, mistakes, failure signs and one change) and a checkpoint report (expectancy with its range, rules followed vs broken, the weakest part of the read, costliest mistakes, best and worst splits). Rule changes are recorded as versions so results before and after a change stay apart. The dashboard shows an FTMO tracker from the last import.
+
+Plain HTML, CSS and JavaScript (`app.js`, `import.js`, `review.js`), with no build step; the only dependency is the Supabase client, loaded from a CDN. Open `index.html` through any static host (GitHub Pages works).
 
 Shortcuts: `N` new entry · `⌘/Ctrl + S` save · `⌘/Ctrl + V` paste a screenshot into an entry.
