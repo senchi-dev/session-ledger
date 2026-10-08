@@ -18,6 +18,7 @@ function serverTime(s) {
 }
 
 async function readReport(file) {
+  if (/^image\//.test(file.type) && /^ReportHistory/i.test(file.name)) throw new Error('this is the chart picture MT5 saves next to the report. Drop the .html file with the same name.');
   const buf = new Uint8Array(await file.arrayBuffer());
   const enc = buf[0] === 0xff && buf[1] === 0xfe ? 'utf-16le' : buf[0] === 0xfe && buf[1] === 0xff ? 'utf-16be' : 'utf-8';
   const doc = new DOMParser().parseFromString(new TextDecoder(enc).decode(buf), 'text/html');
@@ -28,7 +29,7 @@ async function readReport(file) {
     if (!/^\d{4}\.\d\d\.\d\d \d\d:\d\d/.test(c[0] || '')) continue;
     if (c.length === 14) pos.push(c); else if (c.length === 11) ord.push(c); else if (c.length === 15) deals.push(c);
   }
-  if (!pos.length && !deals.length) throw new Error('No positions found. Export the report as HTML from the History tab.');
+  if (!pos.length && !deals.length) throw new Error('no positions in this file. In MT5: History tab → right-click → Report → HTML, then drop the .html file it saves (not the .png next to it).');
   const title = (doc.querySelector('title') || {}).textContent || '';
   return {
     account: (/^(\d+)/.exec(title) || [])[1] || '',
@@ -125,7 +126,7 @@ function viewImport() {
       <p class="sub">In MT5 desktop: History tab → right-click → Report → HTML. Export the whole history each time: trades already imported are skipped.</p></div>
   </header>
   <section class="card">
-    <label class="drop" id="imp-drop" tabindex="0">Drop the report here, or <span class="link">choose the file</span><input type="file" id="imp-file" accept=".html,.htm,text/html" hidden></label>
+    <label class="drop" id="imp-drop" tabindex="0">Drop the report (.html) or a screenshot of the trade rows here, or <span class="link">choose the file</span><input type="file" id="imp-file" accept=".html,.htm,text/html,image/*" hidden></label>
     <div id="imp-out"></div>
   </section>`;
 
@@ -160,7 +161,7 @@ function viewImport() {
     const pick = rows.filter(r => !r.known && r.on);
     const touched = new Map();
     for (const { t, match } of pick) {
-      const { date, comment, finalStop, closedBy, ...trade } = t;
+      const { date, comment, finalStop, closedBy, open, ...trade } = t;
       if (match) {   // keep the read, mistakes and review typed by hand; MT5 is right about the numbers
         const s = touched.get(match.s.id) || structuredClone(match.s), x = s.trades.find(y => y.id === match.x.id);
         Object.assign(x, { mt5: trade.mt5, time: trade.time, entry: trade.entry, stop: trade.stop, exit: trade.exit, exits: trade.exits, size: trade.size, riskUsd: trade.riskUsd, pnl: trade.pnl, target: has(x.target) ? x.target : trade.target });
@@ -190,10 +191,19 @@ function viewImport() {
 
   const load = async file => {
     try {
-      const rep = await readReport(file);
-      snap = reportSnapshot(rep);
+      let list;
+      if (/^image\//.test(file.type) && !/^ReportHistory/i.test(file.name)) {   // a screenshot of the Trade or History tab
+        out.innerHTML = '<p class="small muted" style="margin-top:16px">Reading the screenshot… (the first time takes a few seconds)</p>';
+        list = (await ocrLines(file)).map(parseShotLine).filter(Boolean);
+        if (!list.length) throw new Error('no trade row recognised. Crop to the rows of the Trade or History tab and try again.');
+        snap = null;
+      } else {
+        const rep = await readReport(file);
+        snap = reportSnapshot(rep);
+        list = reportTrades(rep);
+      }
       const claimed = new Set();
-      rows = reportTrades(rep).map(t => ({ t, known: known.has(t.mt5), match: known.has(t.mt5) ? null : handLogged(t, claimed), on: true }));
+      rows = list.map(t => ({ t, known: known.has(t.mt5), match: known.has(t.mt5) ? null : handLogged(t, claimed), on: true }));
       render();
     } catch (e) {
       console.error(e);
