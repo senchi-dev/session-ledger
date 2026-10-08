@@ -206,3 +206,97 @@ function viewImport() {
   ['dragleave', 'drop'].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.remove('over'); }));
   drop.addEventListener('drop', e => { if (e.dataTransfer.files[0]) load(e.dataTransfer.files[0]); });
 }
+
+// ───────────────────────── screenshots ─────────────────────────
+// A screenshot of MT5's Trade or History tab is read in the browser with Tesseract.js (loaded on first use,
+// nothing leaves the device). Each row with a date and buy/sell becomes a trade. Columns are found by meaning,
+// not position: prices close to the entry are stop, target and exit; small numbers are volume, swap and profit.
+let ocrLib = null;
+const loadOcr = () => ocrLib || (ocrLib = new Promise((res, rej) => {
+  const s = document.createElement('script');
+  s.src = 'https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js';
+  s.onload = () => res(window.Tesseract);
+  s.onerror = () => { ocrLib = null; rej(new Error('the text reader could not load; check the connection')); };
+  document.head.appendChild(s);
+}));
+
+async function ocrLines(file) {
+  const T = await loadOcr();
+  const bmp = await createImageBitmap(file);
+  const k = bmp.width < 2600 ? 3 : 2;   // small text reads better enlarged
+  const c = document.createElement('canvas');
+  c.width = bmp.width * k; c.height = bmp.height * k;
+  const g = c.getContext('2d');
+  g.drawImage(bmp, 0, 0, c.width, c.height);
+  const img = g.getImageData(0, 0, c.width, c.height), px = img.data;
+  let sum = 0;
+  for (let i = 0; i < px.length; i += 4) sum += 0.299 * px[i] + 0.587 * px[i + 1] + 0.114 * px[i + 2];
+  const dark = sum / (px.length / 4) < 128;   // dark theme: invert so text is dark on light
+  for (let i = 0; i < px.length; i += 4) {
+    let v = 0.299 * px[i] + 0.587 * px[i + 1] + 0.114 * px[i + 2];
+    if (dark) v = 255 - v;
+    v = v > 170 ? 255 : v < 110 ? 0 : v;
+    px[i] = px[i + 1] = px[i + 2] = v;
+  }
+  g.putImageData(img, 0, 0);
+  const worker = await T.createWorker('eng');
+  try {
+    await worker.setParameters({ tessedit_pageseg_mode: '6', preserve_interword_spaces: '1' });
+    const { data } = await worker.recognize(c);
+    return data.text.split('\n');
+  } finally { await worker.terminate(); }
+}
+
+const OCR_DT = /(\d{4})[.\-\/](\d{2})[.\-\/](\d{2})\s*(\d{2})[:.](\d{2})(?:[:.](\d{2}))?/g;
+const ocrNums = s => (s.replace(OCR_DT, ' ').match(/[-−]?\d+(?:\.\d+)?/g) || []).map(x => +x.replace('−', '-'));
+const matchInstrument = sym => (S.settings.instruments.find(i => i.name.toLowerCase() === String(sym).toLowerCase()) || {}).name || sym;
+
+function parseShotLine(raw) {
+  const text = raw.replace(/[|]/g, ' ').replace(/(\d),(\d{2}\b)/g, '$1.$2');
+  const dts = [...text.matchAll(OCR_DT)];
+  const side = /\b(buy|sell)\b/i.exec(text);
+  if (!dts.length || !side) return null;
+  const stamp = m => `${m[1]}.${m[2]}.${m[3]} ${m[4]}:${m[5]}:${m[6] || '00'}`;
+  const ticket = (text.replace(OCR_DT, ' ').match(/\b\d{7,10}\b/) || [])[0] || '';
+  const sym = (text.match(/\b([a-z]{2,6}\d{0,4}\.[a-z]{2,6}|[a-z]{2,4}\d{2,4})\b/i) || [])[1] || '';
+  const after = text.slice(side.index + side[0].length);
+  const dt2 = [...after.matchAll(OCR_DT)][0];   // a close time means a closed position (History tab)
+  const A = ocrNums(dt2 ? after.slice(0, dt2.index) : after), B = dt2 ? ocrNums(after.slice(dt2.index + dt2[0].length)) : [];
+  if (A.length < 2) return null;
+  const size = A[0], entry = A[1], near = x => Math.abs(x - entry) / entry < 0.05;
+  const dir = side[1].toLowerCase() === 'sell' ? 'short' : 'long';
+  const nearA = A.slice(2).filter(near), farA = A.slice(2).filter(x => !near(x));
+  const open = !dt2;
+  let exit = '', pnl = '';
+  if (open) nearA.pop();   // the Trade tab ends with the current price and the floating profit
+  else {
+    exit = B.find(near) ?? '';
+    const money = B.filter(x => !near(x));   // commission, swap, profit
+    pnl = money.length ? +money.reduce((a, b) => a + b, 0).toFixed(2) : '';
+  }
+  const below = nearA.filter(x => x < entry), above = nearA.filter(x => x > entry);
+  const stop = (dir === 'long' ? below[0] : above[0]) ?? '', target = (dir === 'long' ? above[0] : below[0]) ?? '';
+  const t = serverTime(stamp(dts[0]));
+  const instrument = matchInstrument(sym), ppl = instrPPL(instrument);
+  return {
+    mt5: ticket, date: t.date, time: t.time, instrument, dir, entryTf: '', entry, stop, target, exit, exits: [], size,
+    riskUsd: stop !== '' && ppl ? +(Math.abs(entry - stop) * size * ppl).toFixed(2) : '', pnl, open,
+    stopMgmt: '', mistakes: [], takeAgain: '', review: {},
+  };
+}
+
+// Trades for one session date, from either an MT5 HTML report or a screenshot of the trade rows
+async function mt5TradesFor(file, date) {
+  if (/\.html?$/i.test(file.name) || file.type === 'text/html') {
+    const rep = await readReport(file);
+    const day = reportTrades(rep).filter(t => t.date === date);
+    return { trades: day, snap: reportSnapshot(rep), note: day.length ? '' : `No position opened on ${fmtDate(date)} in this report.` };
+  }
+  if (!/^image\//.test(file.type)) throw new Error('drop an .html report or an image');
+  const rows = (await ocrLines(file)).map(parseShotLine).filter(Boolean);
+  if (!rows.length) return { trades: [], note: 'No trade row recognised. Crop to the rows of the Trade or History tab and try again.' };
+  const same = rows.filter(t => t.date === date);
+  // the screenshot was dropped into this session on purpose: if its date was misread, keep the rows anyway
+  return same.length ? { trades: same, note: rows.length > same.length ? `${plural(rows.length - same.length, 'row')} from another day ignored.` : '' }
+    : { trades: rows, note: `The screenshot reads ${fmtDate(rows[0].date)}, not ${fmtDate(date)}: check the trades.` };
+}

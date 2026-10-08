@@ -1156,7 +1156,12 @@ async function viewForm(id) {
       <section class="card fs">
         <div class="sec-h"><div><h2>Trades</h2><p class="sec-sub">One block per trade, all under the same read. No trade today? Leave this empty.</p></div><span class="count mono" id="t-n"></span></div>
         <div class="trades" id="trades"></div>
-        <button type="button" class="btn" id="trade-add">+ Add a trade</button>
+        <div class="t-actions">
+          <button type="button" class="btn" id="trade-add">+ Add a trade</button>
+          <label class="mt5-drop" id="mt5-drop" tabindex="0"><b>Fill from MT5</b><span>drop a screenshot of the trade rows or the HTML report · only this day’s positions are taken</span>
+            <input type="file" id="mt5-file" accept=".html,.htm,text/html,image/*" hidden></label>
+        </div>
+        <p class="small muted" id="mt5-msg" style="margin:8px 0 0" role="status"></p>
       </section>
 
       <section class="card fs" id="nt-sec">
@@ -1319,6 +1324,50 @@ async function viewForm(id) {
     } else return;
     updateTrade(i); refresh();
   });
+
+  // ── MT5: a report or a screenshot fills this day's trades; hand-typed trades are updated, not duplicated
+  const fillFromMt5 = async file => {
+    const msg = $('#mt5-msg');
+    msg.textContent = /^image\//.test(file.type) ? 'Reading the screenshot… (the first time takes a few seconds)' : 'Reading the report…';
+    try {
+      const { trades, note, snap } = await mt5TradesFor(file, d.date);
+      const elsewhere = new Set(S.sessions.filter(x => x.id !== d.id).flatMap(x => (x.trades || []).map(t => t.mt5).filter(Boolean)));
+      let added = 0, updated = 0, open = 0;
+      for (const m of trades) {
+        if (m.mt5 && elsewhere.has(m.mt5)) continue;
+        const { date, comment, finalStop, closedBy, open: isOpen, ...fields } = m;
+        if (isOpen) open++;
+        const tol = Math.max(0.3, fields.entry * 0.0001);
+        const same = d.trades.find(x => (m.mt5 && x.mt5 === m.mt5) || (!x.mt5 && x.instrument === fields.instrument && x.dir === fields.dir
+          && (num(x.entry) == null || Math.abs(num(x.entry) - fields.entry) <= tol)));
+        if (same) {   // keep what was typed by hand (read, mistakes, review); MT5 is right about the numbers
+          for (const k of ['mt5', 'time', 'instrument', 'dir', 'entry', 'stop', 'size', 'riskUsd']) if (has(fields[k])) same[k] = fields[k];
+          if (has(fields.pnl)) same.pnl = fields.pnl;
+          if (has(fields.exit) || fields.exits.length) { same.exit = fields.exit; same.exits = fields.exits; }
+          if (!has(same.target) && has(fields.target)) same.target = fields.target;
+          if (!same.stopMgmt && fields.stopMgmt) same.stopMgmt = fields.stopMgmt;
+          if (fields.stopMgmt === 'widened' && !same.mistakes.includes(MISTAKES[0])) same.mistakes.push(MISTAKES[0]);
+          updated++;
+        } else {
+          d.trades.push({ ...newTrade(), ...fields, mistakes: [...fields.mistakes], review: {} });
+          added++;
+        }
+      }
+      d.trades.sort((a, b) => (a.time || '').localeCompare(b.time || ''));
+      if (snap) { S.settings.ftmo = { ...(S.settings.ftmo || {}), snap }; saveSettings(); }
+      renderTrades();
+      msg.textContent = [added ? `${plural(added, 'trade')} added` : '', updated ? `${plural(updated, 'trade')} updated` : '',
+        open ? `${open} still open in the screenshot: add the P&L once closed` : '', !added && !updated && !note ? 'Nothing new for this day.' : '', note].filter(Boolean).join(' · ');
+    } catch (err) {
+      console.error(err);
+      msg.textContent = 'Could not read it: ' + err.message;
+    }
+  };
+  $('#mt5-file').addEventListener('change', e => { if (e.target.files[0]) fillFromMt5(e.target.files[0]); e.target.value = ''; });
+  const mdrop = $('#mt5-drop');
+  ['dragenter', 'dragover'].forEach(ev => mdrop.addEventListener(ev, e => { e.preventDefault(); e.stopPropagation(); mdrop.classList.add('over'); }));
+  ['dragleave', 'drop'].forEach(ev => mdrop.addEventListener(ev, e => { e.preventDefault(); e.stopPropagation(); mdrop.classList.remove('over'); }));
+  mdrop.addEventListener('drop', e => { if (e.dataTransfer.files[0]) fillFromMt5(e.dataTransfer.files[0]); });
 
   // ── no trade: the day's review instead of a trade review
   const ntKey = () => d.missed ? 'ntMissed' : 'ntGood';
