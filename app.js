@@ -638,6 +638,7 @@ function viewDashboard() {
     <article class="card">${recent(list)}</article>
   </section>`;
 
+  bindFtmo();
   bindFilters(viewDashboard);
   bindSampleBanner(viewDashboard);
   drawEquity($('#eq'), st.eq);

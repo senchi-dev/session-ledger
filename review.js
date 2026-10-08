@@ -44,21 +44,54 @@ function ftmoCard() {
   if (!snap) return '';
   const initial = num(f.initial) ?? snap.initial ?? 10000, [label, targetPct] = FTMO_PHASES[f.phase || 'challenge'];
   const bal = snap.balance, todayPrague = new Date(Date.now() - 6 * 3600e3).toISOString().slice(0, 10);   // the FTMO day starts at 18:00 New York
-  const dayStart = snap.day === todayPrague ? snap.dayStart : bal;
-  const dailyFloor = dayStart - initial * 0.05, maxFloor = initial * 0.9, target = initial * (1 + targetPct / 100);
+  const metrix = snap.source === 'metrix', today = snap.day === todayPrague;
+  // MetriX figures are taken as given; an import's are worked out from the report's balances
+  const dailyFloor = metrix ? bal - (today && snap.roomToday != null ? snap.roomToday : initial * 0.05)
+    : (today ? snap.dayStart : bal) - initial * 0.05;
+  const maxFloor = metrix && snap.roomMax != null ? bal - snap.roomMax : initial * 0.9, target = initial * (1 + targetPct / 100);
   const prog = targetPct ? Math.max(0, Math.min(1, (bal - initial) / (target - initial))) : null;
   const usd = v => '$' + Math.round(v).toLocaleString('en-US');
   return `<article class="card ftmo">
-    <div class="card-h"><h2>FTMO ${esc(label)}</h2><span class="muted small">from your MT5 import · ${esc(snap.at.slice(0, 16).replace(/\./g, '-'))} server</span></div>
+    <div class="card-h"><h2>FTMO ${esc(label)}</h2><span class="ftmo-src"><span class="muted small">${metrix ? `from FTMO MetriX · ${esc(snap.at)}` : `from your MT5 import · ${esc(snap.at.slice(0, 16).replace(/\./g, '-'))} server`}</span><button type="button" class="btn small" id="ftmo-edit">Edit</button></span></div>
+    <div class="ftmo-form" id="ftmo-form" hidden>
+      <label class="fld"><span>Balance ($)</span><input type="number" step="any" inputmode="decimal" id="mx-bal" value="${esc(bal)}"></label>
+      <label class="fld"><span>Room today ($)</span><input type="number" step="any" inputmode="decimal" id="mx-day" value="${esc(+(bal - dailyFloor).toFixed(2))}"></label>
+      <label class="fld"><span>Room overall ($)</span><input type="number" step="any" inputmode="decimal" id="mx-max" value="${esc(+(bal - maxFloor).toFixed(2))}"></label>
+      <label class="fld"><span>Trading days</span><input type="number" step="1" inputmode="numeric" id="mx-days" value="${esc(snap.days ?? '')}"></label>
+      <div class="ftmo-form-a"><button type="button" class="btn primary small" id="mx-save">Save</button><button type="button" class="btn ghost small" id="mx-cancel">Cancel</button></div>
+      <p class="small muted">From FTMO MetriX: room today is “Today’s permitted loss”, room overall is “Max permitted loss”.</p>
+    </div>
     <div class="ftmo-grid">
       <div><div class="k">Balance</div><div class="v mono ${cls(bal - initial)}">${usd(bal)}</div><div class="s">${fmtUsd(bal - initial)} since the start</div></div>
       ${targetPct ? `<div><div class="k">Profit target ${usd(target)}</div><div class="progress"><span style="width:${(prog * 100).toFixed(1)}%"></span></div><div class="s">${usd(Math.max(0, target - bal))} to go</div></div>` : ''}
       <div><div class="k">Room today</div><div class="v mono ${bal - dailyFloor < initial * 0.02 ? 'neg' : ''}">${usd(bal - dailyFloor)}</div><div class="s">before the daily floor at ${usd(dailyFloor)}</div></div>
       <div><div class="k">Room overall</div><div class="v mono ${bal - maxFloor < initial * 0.03 ? 'neg' : ''}">${usd(bal - maxFloor)}</div><div class="s">before the ${usd(maxFloor)} floor</div></div>
-      <div><div class="k">Trading days</div><div class="v mono ${snap.days >= 4 ? 'pos' : ''}">${snap.days}</div><div class="s">minimum 4</div></div>
+      <div><div class="k">Trading days</div><div class="v mono ${snap.days >= 4 ? 'pos' : ''}">${snap.days ?? '—'}</div><div class="s">minimum 4</div></div>
     </div>
     <p class="small muted" style="margin:12px 0 0">Closed trades only: an open position’s floating loss also counts toward FTMO’s limits.</p>
   </article>`;
+}
+
+function bindFtmo() {
+  const edit = $('#ftmo-edit');
+  if (!edit) return;
+  const form = $('#ftmo-form');
+  edit.addEventListener('click', () => { form.hidden = !form.hidden; if (!form.hidden) $('#mx-bal').select(); });
+  $('#mx-cancel').addEventListener('click', () => { form.hidden = true; });
+  $('#mx-save').addEventListener('click', async () => {
+    const bal = num($('#mx-bal').value);
+    if (bal == null) { toast('Enter the balance'); return; }
+    const prev = (S.settings.ftmo || {}).snap || {};
+    S.settings.ftmo = { ...(S.settings.ftmo || {}), snap: {
+      source: 'metrix', at: new Date().toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }),
+      day: new Date(Date.now() - 6 * 3600e3).toISOString().slice(0, 10),   // the FTMO day, which starts at 18:00 New York
+      balance: bal, roomToday: num($('#mx-day').value), roomMax: num($('#mx-max').value),
+      days: num($('#mx-days').value) ?? prev.days ?? null, initial: (S.settings.ftmo || {}).initial ?? prev.initial ?? 10000,
+    } };
+    await saveSettings();
+    toast('FTMO figures updated');
+    route();
+  });
 }
 
 // ───────────────────────── review page ─────────────────────────

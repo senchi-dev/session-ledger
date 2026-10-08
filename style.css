@@ -511,3 +511,10 @@ q.lesson, .lessons q { quotes: "“" "”"; font-style: italic; color: var(--ink
 .mt5-drop { flex: 1; min-width: 240px; display: flex; flex-direction: column; justify-content: center; gap: 2px; padding: 8px 14px; border: 1px dashed var(--rule-2); border-radius: 9px; cursor: pointer; font-size: 12.5px; color: var(--muted); }
 .mt5-drop b { color: var(--ink); font-weight: 500; font-size: 13px; }
 .mt5-drop:hover, .mt5-drop.over { border-color: var(--ink); background: var(--surface-2); }
+
+.ftmo-src { display: flex; align-items: center; gap: 10px; }
+.ftmo-form { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px 16px; margin: 4px 0 18px; padding: 14px; border: 1px solid var(--rule); border-radius: var(--r-sm); background: var(--surface-2); }
+.ftmo-form[hidden] { display: none; }
+.ftmo-form-a { grid-column: 1 / -1; display: flex; gap: 8px; }
+.ftmo-form p { grid-column: 1 / -1; margin: 0; }
+@media (max-width: 760px) { .ftmo-form { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
