@@ -597,7 +597,7 @@ function viewDashboard() {
     ${kpi('Current streak', st.streak ? `${st.streak.n} ${st.streak.type === 'win' ? 'W' : 'L'}` : '—', st.streak ? (st.streak.type === 'win' ? 'pos' : 'neg') : '', st.streak ? (st.streak.type === 'win' ? 'wins in a row' : 'losses in a row') : 'breakevens ignored')}
   </section>
 
-  ${ftmoCard() ? `<section class="row one">${ftmoCard()}</section>` : ''}
+  <section class="row one">${ftmoCard()}</section>
 
   <section class="row">
     <article class="card">
@@ -1355,7 +1355,6 @@ async function viewForm(id) {
         }
       }
       d.trades.sort((a, b) => (a.time || '').localeCompare(b.time || ''));
-      if (snap) { S.settings.ftmo = { ...(S.settings.ftmo || {}), snap }; saveSettings(); }
       renderTrades();
       msg.textContent = [added ? `${plural(added, 'trade')} added` : '', updated ? `${plural(updated, 'trade')} updated` : '',
         open ? `${open} still open in the screenshot: add the P&L once closed` : '', !added && !updated && !note ? 'Nothing new for this day.' : '', note].filter(Boolean).join(' · ');
@@ -1649,9 +1648,9 @@ async function viewSettings() {
       <h2 style="margin-bottom:12px">FTMO account</h2>
       <div class="set-grid">
         <div class="fld"><span>Phase</span>${seg('ftmo-phase', Object.entries(FTMO_PHASES).map(([k, [l]]) => [k, l]), (st.ftmo || {}).phase || 'challenge')}</div>
-        ${setField('ftmoInitial', 'Starting balance ($)', (st.ftmo || {}).initial ?? ((st.ftmo || {}).snap || {}).initial ?? 10000)}
+        ${setField('ftmoInitial', 'Starting balance ($)', (st.ftmo || {}).initial ?? 10000)}
       </div>
-      <p class="small muted" style="margin:14px 0 0">${(st.ftmo || {}).snap ? `Balance ${fmtUsd((st.ftmo.snap.balance))} from the MT5 import of ${esc(st.ftmo.snap.at)}.` : 'The dashboard tracker appears after your first MT5 import.'}</p>
+      <p class="small muted" style="margin:14px 0 0">The dashboard card starts from your MetriX figures and adds every Live trade logged after them. Use Edit on the card to set a new starting point.</p>
     </article>
     ${cloudCard(cloud)}
     <article class="card">

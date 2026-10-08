@@ -184,7 +184,6 @@ function viewImport() {
       if (i >= 0) S.sessions[i] = s; else S.sessions.push(s);
     }
     rebuild();
-    if (snap) { S.settings.ftmo = { ...(S.settings.ftmo || {}), snap }; await saveSettings(); }
     toast(`Imported ${plural(pick.length, 'trade')} into ${plural(touched.size, 'session')}`);
     location.hash = '#trades';
   };
