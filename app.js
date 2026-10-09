@@ -1870,6 +1870,10 @@ async function route() {
   closeLightbox();
   const [view, id] = (location.hash.replace(/^#\/?/, '') || 'dashboard').split('/');
   $$('.nav a').forEach(a => { if (a.dataset.nav === view) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current'); });
+  if (view !== 'trades') {   // a day picked in the calendar only filters the Trades page until you leave it
+    const tq = prefs.get('tq', {});
+    if (tq.day) prefs.set('tq', { ...tq, day: '' });
+  }
   if (view === 'trades') viewTrades();
   else if (view === 'new') await viewForm(null);
   else if (view === 'edit') await viewForm(id);
