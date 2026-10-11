@@ -3,24 +3,25 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>Session Ledger</title>
+<title>Session Ledger · senchi.</title>
 <meta name="description" content="A trading journal that works offline and syncs to your own database: log trades, attach chart evidence, and track R-based statistics.">
 <meta name="robots" content="noindex">
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%23121513'/%3E%3Cline x1='11' y1='7' x2='11' y2='25' stroke='%23F3F4F1' stroke-width='1.5'/%3E%3Crect x='8' y='11' width='6' height='9' rx='1' fill='%23F3F4F1'/%3E%3Cline x1='21' y1='5' x2='21' y2='21' stroke='%2334C28A' stroke-width='1.5'/%3E%3Crect x='18' y='8' width='6' height='9' rx='1' fill='%2334C28A'/%3E%3C/svg%3E">
+<link rel="icon" type="image/png" href="assets/favicon.png">
+<link rel="apple-touch-icon" href="assets/apple-touch-icon.png">
+<meta name="theme-color" content="#DBDBDB" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0A0A0A" media="(prefers-color-scheme: dark)">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap">
-<link rel="stylesheet" href="style.css?v=22">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Inter+Tight:wght@600;700;800&family=JetBrains+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="style.css?v=23">
 </head>
 <body>
 <header class="top">
   <div class="top-in">
     <a class="brand" href="#dashboard" aria-label="Session Ledger home">
-      <svg viewBox="0 0 24 24" aria-hidden="true" class="mark">
-        <line x1="8" y1="4" x2="8" y2="20" class="mk-w"/><rect x="5.5" y="8" width="5" height="8" rx="1" class="mk-b"/>
-        <line x1="16" y1="2" x2="16" y2="16" class="mk-w2"/><rect x="13.5" y="5" width="5" height="7" rx="1" class="mk-g"/>
-      </svg>
-      <span>Session Ledger</span>
+      <img src="assets/mark-ink.png" alt="" class="mark mark-light" width="28" height="28">
+      <img src="assets/mark-grey.png" alt="" class="mark mark-dark" width="28" height="28">
+      <span class="wordmark">senchi<i></i></span><small>ledger</small>
     </a>
     <nav class="nav" aria-label="Main">
       <a href="#dashboard" data-nav="dashboard">Dashboard</a>
@@ -49,8 +50,8 @@
 </div>
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-<script src="import.js?v=22"></script>
-<script src="review.js?v=22"></script>
-<script src="app.js?v=22"></script>
+<script src="import.js?v=23"></script>
+<script src="review.js?v=23"></script>
+<script src="app.js?v=23"></script>
 </body>
 </html>
