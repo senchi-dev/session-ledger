@@ -49,6 +49,9 @@ const PRE_DONE = [
   d => (d.smt || []).length, d => has(d.inval), d => has(d.draw) || has(d.planTarget),
 ];
 const POST_DONE = [d => d.actual, d => d.biasOk, d => d.drawHit, d => d.followed === true || d.followed === false, d => has(d.lesson)];
+// no valid framework (neutral read or no clear profile): bias and draw can't be graded, so they're skipped and left out of the stats
+const NO_FRAME = d => d.actual === 'other' || d.bias === 'none';
+const postDone = d => NO_FRAME(d) ? [countDone([POST_DONE[0], POST_DONE[3], POST_DONE[4]], d), 3] : [countDone(POST_DONE, d), 5];
 const price = v => num(String(v ?? '').replace(/[,\s]/g, ''));   // prices are typed as 30,461.7
 const ROOM = ['2R or more to the draw', 'Less than 2R to the draw'];
 const countDone = (checks, d) => checks.filter(fn => fn(d)).length;
@@ -481,10 +484,10 @@ function rateBy(list, keyFn, order, labelFn = k => k, okFn = t => t.biasOk === '
   return keys.map(k => { const a = m.get(k); return { key: k, label: labelFn(k), n: a.length, rate: a.filter(Boolean).length / a.length }; });
 }
 function readStats(list) {
-  const graded = list.filter(t => t.biasOk === 'right' || t.biasOk === 'wrong');
+  const graded = list.filter(t => !NO_FRAME(t) && (t.biasOk === 'right' || t.biasOk === 'wrong'));
   const called = list.filter(t => t.profile && t.actual);
   const rated = list.filter(t => t.followed === true || t.followed === false);
-  const drawn = list.filter(t => t.drawHit === 'yes' || t.drawHit === 'no');
+  const drawn = list.filter(t => !NO_FRAME(t) && (t.drawHit === 'yes' || t.drawHit === 'no'));
   const rate = (a, fn) => a.length ? a.filter(fn).length / a.length : null;
   return {
     graded, called,
@@ -1042,12 +1045,12 @@ function preBlock(t) {
   ]);
 }
 function postBlock(t) {
-  const n = countDone(POST_DONE, t);
+  const [n, of] = postDone(t), nf = NO_FRAME(t), na = '<span class="muted">Not graded · no valid framework</span>';
   const hit = t.profile && t.actual ? (t.profile === t.actual ? tag('called it', 'good') : tag('missed', 'bad')) : '';
-  return `<div class="card-h"><h2>After the session</h2><span class="count mono ${n === 5 ? 'pos' : 'muted'}">${n}/5</span></div>` + numbered([
+  return `<div class="card-h"><h2>After the session</h2><span class="count mono ${n === of ? 'pos' : 'muted'}">${n}/${of}</span></div>` + numbered([
     ['Profile that happened', t.actual ? `${esc(profLabel(t.actual))} ${hit}` : ''],
-    ['Bias', t.biasOk ? `${tag(t.biasOk === 'right' ? 'Right' : 'Wrong', t.biasOk === 'right' ? 'good' : 'bad')}${t.biasOk === 'wrong' && (has(t.failSign) || t.failTime) ? `<p class="fail">${t.failTime ? `<span class="mono">${esc(t.failTime)} ET</span> · ` : ''}${esc(t.failSign || '')}</p>` : ''}` : ''],
-    ['Draw', t.drawHit ? tag(t.drawHit === 'yes' ? 'Reached' : 'Not reached', t.drawHit === 'yes' ? 'good' : 'bad') : ''],
+    ['Bias', nf ? na : t.biasOk ? `${tag(t.biasOk === 'right' ? 'Right' : 'Wrong', t.biasOk === 'right' ? 'good' : 'bad')}${t.biasOk === 'wrong' && (has(t.failSign) || t.failTime) ? `<p class="fail">${t.failTime ? `<span class="mono">${esc(t.failTime)} ET</span> · ` : ''}${esc(t.failSign || '')}</p>` : ''}` : ''],
+    ['Draw', nf ? na : t.drawHit ? tag(t.drawHit === 'yes' ? 'Reached' : 'Not reached', t.drawHit === 'yes' ? 'good' : 'bad') : ''],
     ['Followed my rules', t.followed === true ? tag('Yes', 'good') : t.followed === false ? tag('No', 'bad') : ''],
     ['Lesson', has(t.lesson) ? `<q class="lesson">${esc(t.lesson)}</q>` : ''],
   ]);
@@ -1178,6 +1181,7 @@ async function viewForm(id) {
         <div class="sec-h"><div><h2>After the session</h2><p class="sec-sub">Fill this in during your review, with a cool head.</p></div><span class="count mono" id="post-n"></span></div>
         <ol class="qs">
           ${qrow(1, 'The profile that actually happened', seg('actual', Object.entries(PROFILES), d.actual))}
+          <li class="q-row q-na" id="q-na"><span class="q-num mono">—</span><div class="q-body"><p class="q-title">No valid framework today</p><p class="small muted" style="margin:0">Price had no clear bias or draw to grade, so questions 02 and 03 are skipped and left out of your stats.</p></div></li>
           ${qrow(2, 'Was the bias right?', seg('biasOk', [['right', 'Right'], ['wrong', 'Wrong']], d.biasOk, 'pn'))}
           ${qrow(3, 'Was the draw reached?', seg('drawHit', [['yes', 'Reached'], ['no', 'Not reached']], d.drawHit || '', 'pn'))}
           ${qrow(4, 'Did I follow my rules?', seg('followed', [['yes', 'Yes'], ['no', 'No']], d.followed === true ? 'yes' : d.followed === false ? 'no' : '', 'pn'))}
@@ -1202,9 +1206,12 @@ async function viewForm(id) {
   const f = $('#f');
   const refresh = () => {
     $('#preview').innerHTML = previewHTML(d);
-    const pn = countDone(PRE_DONE, d), qn = countDone(POST_DONE, d);
+    const pn = countDone(PRE_DONE, d), [qn, qof] = postDone(d);
     $('#pre-n').textContent = pn + '/6'; $('#pre-n').classList.toggle('pos', pn === 6);
-    $('#post-n').textContent = qn + '/5'; $('#post-n').classList.toggle('pos', qn === 5);
+    $('#post-n').textContent = qn + '/' + qof; $('#post-n').classList.toggle('pos', qn === qof);
+    const nf = NO_FRAME(d);
+    $('#q-na').hidden = !nf;
+    ['biasOk', 'drawHit'].forEach(k => { $(`[data-seg="${k}"]`, f).closest('.q-row').hidden = nf; });
   };
 
   // ── trades: one block each, every control scoped to its block
@@ -1419,6 +1426,10 @@ async function viewForm(id) {
     else if (k === 'missed') { d.missed = v === 'yes'; renderNtReview(); }
     else d[k] = v;
     if (k === 'prevType') $('#q-side').hidden = v === 'inside';
+    if ((k === 'actual' || k === 'bias') && NO_FRAME(d)) {
+      d.biasOk = ''; d.drawHit = '';
+      $$('[data-seg="biasOk"] button, [data-seg="drawHit"] button', f).forEach(x => x.setAttribute('aria-pressed', 'false'));
+    }
     if (k === 'bias' || k === 'prevType' || k === 'prevSide') d.trades.forEach((_, i) => updateTrade(i));   // room to the draw and flips depend on the read
     refresh();
   }));
@@ -1484,9 +1495,9 @@ function qrow(n, q, ctrl) {
   return `<li class="q-row"><span class="q-num mono">${pad2(n)}</span><div class="q-body"><p class="q-title">${q}</p><div class="q-ctrl">${ctrl}</div></div></li>`;
 }
 function sessionPV(d) {
-  const pn = countDone(PRE_DONE, d), qn = countDone(POST_DONE, d);
+  const pn = countDone(PRE_DONE, d), [qn, qof] = postDone(d);
   const bar = (n, of) => `<span class="pv-dots">${Array.from({ length: of }, (_, i) => `<i class="${i < n ? 'on' : ''}"></i>`).join('')}</span>`;
-  return `<div class="pv-session"><div><span class="small muted">Before 9:30</span>${bar(pn, 6)}</div><div><span class="small muted">After the session</span>${bar(qn, 5)}</div></div>`;
+  return `<div class="pv-session"><div><span class="small muted">Before 9:30</span>${bar(pn, 6)}</div><div><span class="small muted">After the session</span>${bar(qn, qof)}</div></div>`;
 }
 function previewHTML(d) {
   const views = d.trades.map(t => asTrade(d, t)), rs = views.map(tradeR), done = rs.filter(r => r != null);

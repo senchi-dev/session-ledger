@@ -197,7 +197,7 @@ function checkpointHTML(arg) {
   const reads = [
     ['Bias', rateRange(rd.graded.filter(s => s.biasOk === 'right').length, graded)],
     ['Profile', rateRange(rd.called.filter(s => s.profile === s.actual).length, rd.called.length)],
-    ['Draw', rateRange(sess.filter(s => s.drawHit === 'yes').length, sess.filter(s => s.drawHit === 'yes' || s.drawHit === 'no').length)],
+    ['Draw', rateRange(sess.filter(s => !NO_FRAME(s) && s.drawHit === 'yes').length, sess.filter(s => !NO_FRAME(s) && (s.drawHit === 'yes' || s.drawHit === 'no')).length)],
   ];
   const weakest = reads.filter(([, r]) => r && r.n >= 10).sort((a, b) => a[1].p - b[1].p)[0];
   const leaks = groupBy(st.closed, t => t.mistakes || [], MISTAKES).filter(g => g.netR < 0).sort((a, b) => a.netR - b.netR).slice(0, 3);
