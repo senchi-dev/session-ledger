@@ -49,8 +49,9 @@ const PRE_DONE = [
   d => (d.smt || []).length, d => has(d.inval), d => has(d.draw) || has(d.planTarget),
 ];
 const POST_DONE = [d => d.actual, d => d.biasOk, d => d.drawHit, d => d.followed === true || d.followed === false, d => has(d.lesson)];
-// no valid framework (neutral read or no clear profile): bias and draw can't be graded, so they're skipped and left out of the stats
-const NO_FRAME = d => d.actual === 'other' || d.bias === 'none';
+// no valid framework (a neutral daily read): bias and draw can't be graded, so they're skipped and left out of the stats.
+// The framework comes from the daily alone; a day with no clear profile still has one, only the profile call goes ungraded.
+const NO_FRAME = d => d.bias === 'none';
 const postDone = d => NO_FRAME(d) ? [countDone([POST_DONE[0], POST_DONE[3], POST_DONE[4]], d), 3] : [countDone(POST_DONE, d), 5];
 const price = v => num(String(v ?? '').replace(/[,\s]/g, ''));   // prices are typed as 30,461.7
 const ROOM = ['2R or more to the draw', 'Less than 2R to the draw'];
@@ -1181,7 +1182,7 @@ async function viewForm(id) {
         <div class="sec-h"><div><h2>After the session</h2><p class="sec-sub">Fill this in during your review, with a cool head.</p></div><span class="count mono" id="post-n"></span></div>
         <ol class="qs">
           ${qrow(1, 'The profile that actually happened', seg('actual', Object.entries(PROFILES), d.actual))}
-          <li class="q-row q-na" id="q-na"><span class="q-num mono">—</span><div class="q-body"><p class="q-title">No valid framework today</p><p class="small muted" style="margin:0">Price had no clear bias or draw to grade, so questions 02 and 03 are skipped and left out of your stats.</p></div></li>
+          <li class="q-row q-na" id="q-na"><span class="q-num mono">—</span><div class="q-body"><p class="q-title">No valid framework today</p><p class="small muted" style="margin:0">The daily read was neutral, so there is no bias or draw to grade: questions 02 and 03 are skipped and left out of your stats.</p></div></li>
           ${qrow(2, 'Was the bias right?', seg('biasOk', [['right', 'Right'], ['wrong', 'Wrong']], d.biasOk, 'pn'))}
           ${qrow(3, 'Was the draw reached?', seg('drawHit', [['yes', 'Reached'], ['no', 'Not reached']], d.drawHit || '', 'pn'))}
           ${qrow(4, 'Did I follow my rules?', seg('followed', [['yes', 'Yes'], ['no', 'No']], d.followed === true ? 'yes' : d.followed === false ? 'no' : '', 'pn'))}
@@ -1426,7 +1427,7 @@ async function viewForm(id) {
     else if (k === 'missed') { d.missed = v === 'yes'; renderNtReview(); }
     else d[k] = v;
     if (k === 'prevType') $('#q-side').hidden = v === 'inside';
-    if ((k === 'actual' || k === 'bias') && NO_FRAME(d)) {
+    if (k === 'bias' && NO_FRAME(d)) {
       d.biasOk = ''; d.drawHit = '';
       $$('[data-seg="biasOk"] button, [data-seg="drawHit"] button', f).forEach(x => x.setAttribute('aria-pressed', 'false'));
     }
