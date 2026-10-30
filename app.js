@@ -70,9 +70,12 @@ const CHECKS = [
 ];
 const MISTAKES = ['Moved stop away', 'Ignored exit rule', 'Entered early', 'Chased', 'Oversized', 'Revenge trade', 'Traded into news', 'Outside my window', 'No stop loss', 'FOMO'];
 const NOTRADE_REASONS = ['No bias', 'High-impact news', '9:30 didn’t deliver', 'Profile invalid', 'Setup came too late', 'Pairs disagreed', 'No room for 2R', 'Other'];
-const IMG_LABELS = ['Daily framework / Bias', '7H profiles', 'Structure', 'Entry'];
-const IMG_OLD = { 'HTF / daily': 'Daily framework / Bias', 'Setup / profile': '7H profiles' };
+const IMG_LABELS = ['Daily framework / Bias', '7H profiles', 'Structure · 4H', 'Structure · 1H', 'Structure · 30m', 'Structure · 15m', 'Structure · 5m', 'Entry'];
+const IMG_OLD = { 'HTF / daily': 'Daily framework / Bias', 'Setup / profile': '7H profiles', 'Structure': 'Structure · 1H' };
 const imgLabel = l => IMG_OLD[l] || l;
+const IMG_DEFAULT = ['Daily framework / Bias', '7H profiles', 'Structure · 1H'];
+const imgRank = l => { const i = IMG_LABELS.indexOf(imgLabel(l)); return i < 0 ? IMG_LABELS.length : i; };
+const sortImgs = list => list.map((x, i) => [x, i]).sort((a, b) => imgRank(a[0].label) - imgRank(b[0].label) || a[1] - b[1]).map(a => a[0]);
 const BUCKETS = ['Pre-open', '9:30–10:30', '10:30–12:00', 'After 12:00'];
 const Q = {
   goodWin: ['What would you improve with your execution on this trade?', 'How could you have managed this trade to increase the profit?', 'What can you do to repeat this type of trade in the future?'],
@@ -978,7 +981,7 @@ async function viewDetail(id) {
   const s = findSession(id);
   if (!s) { app.innerHTML = '<p class="empty">This session doesn’t exist anymore. <a class="link" href="#trades">Back to trades</a></p>'; return; }
   const imgs = (await Promise.all((s.images || []).map(i => DB.get('images', i)))).filter(Boolean);
-  const shots = imgs.map(i => ({ url: trackUrl(i.blob), label: imgLabel(i.label) }));
+  const shots = sortImgs(imgs).map(i => ({ url: trackUrl(i.blob), label: imgLabel(i.label) }));
   const views = (s.trades || []).map(t => asTrade(s, t));
   const rs = views.map(tradeR), done = rs.filter(r => r != null);
   const net = done.reduce((a, b) => a + b, 0), pnl = views.map(tradePnl).filter(p => p != null).reduce((a, b) => a + b, 0);
@@ -1162,7 +1165,7 @@ async function viewForm(id) {
   d.smt = d.smt || []; d.took = d.took || []; d.log = d.log || []; d.trades = d.trades || []; d.reasons = d.reasons || []; d.review = d.review || {}; d.images = d.images || [];
   d.trades.forEach(t => { t.exits = t.exits || []; t.mistakes = t.mistakes || []; t.broke = t.broke || []; t.review = t.review || {}; });
   const imgs = (await Promise.all(d.images.map(i => DB.get('images', i)))).filter(Boolean);
-  const form = { d, imgs: imgs.map(i => ({ ...i, url: trackUrl(i.blob) })), removed: [] };
+  const form = { d, imgs: sortImgs(imgs).map(i => ({ ...i, url: trackUrl(i.blob) })), removed: [] };
 
   app.innerHTML = `
   <header class="page-head">
@@ -1501,7 +1504,7 @@ async function viewForm(id) {
     if (!list.length) return;
     for (const file of list) {
       const blob = await compress(file);
-      form.imgs.push({ id: uid(), blob, url: trackUrl(blob), label: IMG_LABELS[Math.min(form.imgs.length, IMG_LABELS.length - 1)], isNew: true });
+      form.imgs.push({ id: uid(), blob, url: trackUrl(blob), label: IMG_DEFAULT[form.imgs.length] || 'Entry', isNew: true });
     }
     renderThumbs();
     toast(plural(list.length, 'screenshot') + ' added');
@@ -1591,6 +1594,7 @@ async function saveForm(form) {
     for (const im of form.imgs) {
       if (im.isNew || im.dirty) await DB.put('images', { id: im.id, tradeId: d.id, blob: im.blob, label: im.label, created: im.created || Date.now() });
     }
+    form.imgs = sortImgs(form.imgs);
     d.images = form.imgs.map(i => i.id);
     d.trades.forEach(t => {
       const v = asTrade(d, t);
