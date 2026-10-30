@@ -38,6 +38,9 @@ const PREV_TYPE = { manip: 'Manipulation', closure: 'Closure through', inside: '
 const PREV_SIDE = { high: 'The high', low: 'The low' };
 const PREV_CLOSE = { upper: 'Upper third', middle: 'Middle', lower: 'Lower third' };
 const SMT_OPTS = ['ES', 'NQ', 'YM', 'None'];
+const INVAL = { no: 'No, it held', both: 'Yes, on both pairs', one: 'Yes, on one pair only' };
+const ENTRY_TF = ['1H', '30m', '15m', '5m', '4m', '3m'];
+const RULE_BREAKS = ['Against the read in force', 'Profile not confirmed', 'No impulse leg', 'Invalid opposing candles', 'Overextended closure', 'Not the leading pair', 'Other'];
 const STOP_MGMT = { held: 'Left where placed', tightened: 'Moved closer', be: 'Moved to break-even', trailed: 'Trailed', widened: 'Moved away' };
 const EXIT_WHY = ['Partial at target', 'Final target', 'Trailed out', 'Break-even stop', 'Stopped out', 'Manual', 'Time exit'];
 const LOG_KIND = { read: 'Read', inval: 'Invalidated', flip: 'New read', entry: 'Entry', manage: 'Managed', exit: 'Exit', note: 'Note' };
@@ -46,13 +49,18 @@ const READ_REL = ['With the initial read', 'After the read flipped', 'No initial
 const has = v => v != null && String(v).trim() !== '';
 const PRE_DONE = [
   d => d.prevType && (d.prevType === 'inside' || d.prevSide), d => d.bias, d => d.profile,
-  d => (d.smt || []).length, d => has(d.inval), d => has(d.draw) || has(d.planTarget),
+  d => (d.smt || []).length, d => has(d.draw) || has(d.planTarget) || d.noDraw,
 ];
-const POST_DONE = [d => d.actual, d => d.biasOk, d => d.drawHit, d => d.followed === true || d.followed === false, d => has(d.lesson)];
+// a trade is valid when its own "followed my rules" says so; trades logged before that fall back on their day's answer
+const sessFollowed = s => {
+  const v = (s.trades || []).length ? s.trades.map(t => t.followed ?? s.followed) : [s.followed];
+  return v.every(x => x === true || x === false) ? v.every(Boolean) : null;
+};
+const POST_DONE = [d => d.actual, d => d.biasOk, d => d.drawHit, d => d.invalidated, d => sessFollowed(d) !== null, d => has(d.lesson)];
 // no valid framework (a neutral daily read): bias and draw can't be graded, so they're skipped and left out of the stats.
 // The framework comes from the daily alone; a day with no clear profile still has one, only the profile call goes ungraded.
 const NO_FRAME = d => d.bias === 'none';
-const postDone = d => NO_FRAME(d) ? [countDone([POST_DONE[0], POST_DONE[3], POST_DONE[4]], d), 3] : [countDone(POST_DONE, d), 5];
+const postDone = d => NO_FRAME(d) ? [countDone([POST_DONE[0], POST_DONE[4], POST_DONE[5]], d), 3] : [countDone(POST_DONE, d), 6];
 const price = v => num(String(v ?? '').replace(/[,\s]/g, ''));   // prices are typed as 30,461.7
 const ROOM = ['2R or more to the draw', 'Less than 2R to the draw'];
 const countDone = (checks, d) => checks.filter(fn => fn(d)).length;
@@ -119,7 +127,7 @@ const DEFAULT_SETTINGS = {
   ],
 };
 const S = { sessions: [], trades: [], settings: { ...DEFAULT_SETTINGS } };   // trades: one row per trade, derived from sessions
-const F = Object.assign({ acct: 'all', period: 'all', instr: 'all', ver: 'all' }, prefs.get('filters', {}));
+const F = Object.assign({ acct: 'all', period: 'all', instr: 'all', ver: 'all', valid: 'all' }, prefs.get('filters', {}));
 
 async function loadAll() {
   await DB.open();
@@ -132,9 +140,9 @@ const saveSettings = () => DB.put('meta', { k: 'settings', v: S.settings });
 // ───────────────────────── sessions ─────────────────────────
 // One stored record per trading session: the day's read and review once, and the trades taken in it.
 // Records written before this held one trade or one no-trade day each; toSessions() groups them by day.
-const TRADE_KEYS = ['time', 'instrument', 'dir', 'entryTf', 'entry', 'stop', 'target', 'exit', 'size', 'riskUsd', 'pnl', 'rOverride', 'exits', 'stopMgmt', 'mistakes', 'takeAgain', 'review', 'checks', 'emotion'];
+const TRADE_KEYS = ['time', 'instrument', 'dir', 'entryTf', 'entry', 'stop', 'target', 'exit', 'size', 'riskUsd', 'pnl', 'rOverride', 'exits', 'stopMgmt', 'mistakes', 'takeAgain', 'review', 'checks', 'emotion', 'followed', 'broke', 'ledPair'];
 const DAY_KEYS = ['prevType', 'prevSide', 'prevDir', 'prevClose', 'bias', 'conf', 'profile', 'smt', 'inval', 'draw', 'planEntry', 'planStop', 'planPartial', 'planTarget',
-  'actual', 'biasOk', 'drawHit', 'failSign', 'failTime', 'followed', 'lesson', 'reasons', 'missed'];
+  'actual', 'biasOk', 'drawHit', 'failSign', 'failTime', 'followed', 'lesson', 'reasons', 'missed', 'took', 'invalidated', 'invalWhy', 'noDraw'];
 function toSessions(records) {
   const groups = new Map();
   [...records].sort((a, b) => byTime(a, b) || String(a.id).localeCompare(String(b.id))).forEach(r => {
@@ -370,6 +378,18 @@ const exitRows = t => (t.exits || []).filter(x => num(x.pct) > 0 && num(x.price)
 const exitsPct = t => exitRows(t).reduce((a, x) => a + num(x.pct), 0);
 const exitsAvg = t => { const p = exitsPct(t); return p ? exitRows(t).reduce((a, x) => a + num(x.pct) * num(x.price), 0) / p : null; };
 // did the trade follow the pre-9:30 bias, or a read that replaced it during the session?
+const toMin = v => { const m = /^(\d{1,2}):(\d{2})/.exec(v || ''); return m ? +m[1] * 60 + +m[2] : null; };
+const sessMin = v => { const m = toMin(v); return m == null ? null : (m - 1080 + 1440) % 1440; };   // minutes since the 18:00 open, so overnight steps sort before the morning
+// the direction in force when the trade was entered: the 9:30 read, then every timed read / new read logged up to the entry time
+const readAt = t => {
+  let cur = t.bias || null; const e = sessMin(t.time);
+  if (e == null) return cur;
+  const steps = (t.log || []).filter(x => LOG_HAS_DIR(x.kind) && x.dir && sessMin(x.t) != null).sort((a, b) => sessMin(a.t) - sessMin(b.t));
+  for (const x of steps) if (sessMin(x.t) <= e) cur = x.dir;
+  return cur;
+};
+const FORCE = ['With the read in force', 'Against the read in force'];
+const readForce = t => { const r = t.kind !== 'trade' ? null : readAt(t); return !r || r === 'none' ? null : (r === 'bull') === (t.dir !== 'short') ? FORCE[0] : FORCE[1]; };
 const readRel = t => t.kind !== 'trade' || !t.bias ? null : t.bias === 'none' ? READ_REL[2] : (t.bias === 'bull') === (t.dir !== 'short') ? READ_REL[0] : READ_REL[1];
 
 // R available from the entry to the pre-9:30 draw; null when the draw sits behind the entry (a flipped read)
@@ -421,6 +441,11 @@ function tradePnl(t) {
 const outcome = r => r == null ? 'open' : r > 0.1 ? 'win' : r < -0.1 ? 'loss' : 'be';
 const instrPPL = name => (S.settings.instruments.find(i => i.name === name) || {}).ppl ?? null;
 
+const LEVELS = ['Level 1 · NY after 9:30', 'Level 2 · NY before 9:30', 'Level 3 · London', 'Asia'];
+function entryLevel(t) {   // the AM grading of an entry, read off its time alone
+  const m = toMin(t.time); if (m == null) return null;
+  return m >= 570 && m < 1020 ? LEVELS[0] : m >= 480 && m < 570 ? LEVELS[1] : m >= 60 && m < 480 ? LEVELS[2] : LEVELS[3];
+}
 function timeBucket(t) {
   if (!t.time) return null;
   const [h, m] = t.time.split(':').map(Number);
@@ -487,14 +512,15 @@ function rateBy(list, keyFn, order, labelFn = k => k, okFn = t => t.biasOk === '
 function readStats(list) {
   const graded = list.filter(t => !NO_FRAME(t) && (t.biasOk === 'right' || t.biasOk === 'wrong'));
   const called = list.filter(t => t.profile && t.actual);
-  const rated = list.filter(t => t.followed === true || t.followed === false);
+  const rated = list.filter(t => sessFollowed(t) !== null);
   const drawn = list.filter(t => !NO_FRAME(t) && (t.drawHit === 'yes' || t.drawHit === 'no'));
   const rate = (a, fn) => a.length ? a.filter(fn).length / a.length : null;
   return {
     graded, called,
     bias: rate(graded, t => t.biasOk === 'right'),
     profile: rate(called, t => t.profile === t.actual),
-    plan: rate(rated, t => t.followed),
+    plan: rate(rated, t => sessFollowed(t)),
+    byInval: rateBy(graded, t => t.invalidated, Object.keys(INVAL), k => INVAL[k]),
     draw: rate(drawn, t => t.drawHit === 'yes'),
     bySmt: rateBy(graded, t => !(t.smt || []).length ? null : t.smt.includes('None') ? 'No SMT' : 'SMT at the level', ['SMT at the level', 'No SMT']),
     byPrev: rateBy(graded, t => t.prevType, Object.keys(PREV_TYPE), k => PREV_TYPE[k]),
@@ -508,6 +534,7 @@ function filtered() {
   if (F.acct !== 'all') list = list.filter(t => t.acct === F.acct);
   if (F.instr !== 'all') list = list.filter(t => t.kind === 'notrade' || t.instrument === F.instr);
   if (F.ver !== 'all') list = list.filter(t => versionOf(t.date) === +F.ver);
+  if (F.valid !== 'all') list = list.filter(t => t.kind === 'trade' && t.followed === (F.valid === 'valid'));
   if (F.period !== 'all') {
     const d = new Date(); d.setDate(d.getDate() - Number(F.period));
     const from = isoDay(d);
@@ -543,7 +570,8 @@ const tag = (text, c = '') => `<span class="tag ${c}">${esc(text)}</span>`;
 
 function filterBar() {
   const instrs = [...new Set(S.trades.map(t => t.instrument).filter(Boolean))];
-  return seg('acct', [['all', 'All'], ['backtest', 'Backtest'], ['demo', 'Demo'], ['live', 'Live']], F.acct)
+  return seg('valid', [['all', 'All trades'], ['valid', 'Valid'], ['invalid', 'Invalid']], F.valid)
+    + seg('acct', [['all', 'All'], ['backtest', 'Backtest'], ['demo', 'Demo'], ['live', 'Live']], F.acct)
     + seg('period', [['30', '30d'], ['90', '90d'], ['all', 'All time']], F.period)
     + (versions().length > 1 ? `<select class="sel" data-filter="ver" aria-label="Rule version"><option value="all">All versions</option>${versions().map(v => `<option value="${v.n}" ${String(F.ver) === String(v.n) ? 'selected' : ''}>Version ${v.n}</option>`).join('')}</select>` : '')
     + (instrs.length > 1 ? `<select class="sel" data-filter="instr" aria-label="Instrument"><option value="all">All instruments</option>${instrs.map(i => `<option ${F.instr === i ? 'selected' : ''}>${esc(i)}</option>`).join('')}</select>` : '');
@@ -586,7 +614,7 @@ function viewDashboard() {
   ${sampleBanner()}
   ${due ? `<div class="banner"><span>${due} sessions on version ${activeVersion()}: time for a checkpoint.</span><a href="#review/checkpoint">Open the checkpoint</a></div>` : ''}
   <header class="page-head">
-    <div><h1>Dashboard</h1><p class="sub">${plural(st.n, 'closed trade')} · ${plural(nts.length, 'no-trade day')}</p></div>
+    <div><h1>Dashboard</h1><p class="sub">${plural(st.n, 'closed trade')}${F.valid === 'all' ? ' · ' + plural(nts.length, 'no-trade day') : ' · ' + F.valid + ' trades only'}</p></div>
     <div class="filters">${filterBar()}</div>
   </header>
 
@@ -619,23 +647,31 @@ function viewDashboard() {
   <section class="row three">
     <article class="card">${readCard(rd)}</article>
     <article class="card">${rateBars('Bias accuracy by yesterday’s candle', rd.byPrev, 'which daily setups do you read best?')}
-      <div class="rule-gap"></div>${rateBars('Bias accuracy with or without SMT', rd.bySmt)}</article>
+      <div class="rule-gap"></div>${rateBars('Bias accuracy with or without SMT', rd.bySmt)}
+      <div class="rule-gap"></div>${rateBars('Bias right, by whether you called it invalidated', rd.byInval, 'does your invalidation call work?')}</article>
     <article class="card">${rateBars('Profile called correctly', rd.byProfile, 'expected profile vs what happened')}</article>
   </section>
 
   <section class="row three">
     <article class="card">${bars('By daily profile', groupBy(st.closed, t => t.profile, PROFILE_ORDER, profLabel))}
-      <div class="rule-gap"></div>${bars('Initial read vs a flipped read', groupBy(st.closed, readRel, READ_REL))}</article>
+      <div class="rule-gap"></div>${bars('Initial read vs a flipped read', groupBy(st.closed, readRel, READ_REL))}
+      <div class="rule-gap"></div>${bars('Direction vs the read in force at entry', groupBy(st.closed, readForce, FORCE), 'uses the timed steps of the day')}</article>
     <article class="card">${bars('By entry time (ET)', groupBy(st.closed, timeBucket, BUCKETS))}</article>
-    <article class="card">${bars('By entry timeframe', groupBy(st.closed, t => t.entryTf, ['15m', '5m', '3m']))}
+    <article class="card">${bars('By entry timeframe', groupBy(st.closed, t => t.entryTf, ENTRY_TF))}
       <div class="rule-gap"></div>${bars('By stop handling', groupBy(st.closed, t => t.stopMgmt, Object.keys(STOP_MGMT), k => STOP_MGMT[k]))}</article>
   </section>
 
   <section class="row three">
-    <article class="card">${bars('Rules followed vs broken', groupBy(st.closed, t => t.followed === true ? 'Followed' : t.followed === false ? 'Broken' : null, ['Followed', 'Broken']))}
+    <article class="card">${bars('Valid vs invalid trades', groupBy(st.closed, t => t.followed === true ? 'Valid' : t.followed === false ? 'Invalid' : null, ['Valid', 'Invalid']))}
       <div class="rule-gap"></div>${bars('Room at entry', groupBy(st.closed, t => { const r = roomR(t); return r == null ? null : r >= 2 ? ROOM[0] : ROOM[1]; }, ROOM))}</article>
     <article class="card">${bars('Cost of mistakes', groupBy(st.closed, t => t.mistakes || [], MISTAKES), 'net R per tag')}</article>
     <article class="card">${lessonsCard(rd.lessons)}</article>
+  </section>
+
+  <section class="row three">
+    <article class="card">${bars('Traded the pair that led the move', groupBy(st.closed, t => t.ledPair === 'yes' ? 'Led' : t.ledPair === 'no' ? 'Did not lead' : null, ['Led', 'Did not lead']))}</article>
+    <article class="card">${bars('Which rule broke', groupBy(st.closed, t => t.broke || [], RULE_BREAKS), 'net R per rule')}</article>
+    <article class="card">${bars('By session of the entry', groupBy(st.closed, entryLevel, LEVELS), 'level 1 = NY after 9:30')}</article>
   </section>
 
   <section class="row one">
@@ -926,7 +962,7 @@ function tradeTable(list) {
     <td><span class="side ${t.dir === 'short' ? 'short' : 'long'}">${t.dir === 'short' ? 'Short' : 'Long'}</span></td>
     <td>${readCell(t)}</td>
     <td class="r mono ${cls(r)}">${r == null ? '<span class="muted">open</span>' : fmtR(r)}</td><td class="r mono ${cls(p)}">${fmtUsd(p)}</td>
-    <td>${t.followed === true ? tag('followed', 'good') : t.followed === false ? tag('broken', 'bad') : '<span class="muted">—</span>'}</td>
+    <td>${t.followed === true ? tag('valid', 'good') : t.followed === false ? tag('invalid', 'bad') : '<span class="muted">—</span>'}</td>
     <td class="r mono muted">${shots}</td></tr>`;
   }).join('')}</tbody></table></div>`;
 }
@@ -1035,13 +1071,14 @@ function preBlock(t) {
   const prev = [PREV_DIR[t.prevDir], t.prevType && PREV_TYPE[t.prevType] + side, t.prevClose && 'closed in the ' + PREV_CLOSE[t.prevClose].toLowerCase()].filter(Boolean).join(' · ');
   const smt = (t.smt || []).length ? (t.smt.includes('None') ? 'No SMT' : t.smt.join(', ') + ' failed') : '';
   const plan = [['Entry trigger', t.planEntry], ['Stop', t.planStop], ['Partial', t.planPartial], ['Target', t.planTarget]].filter(([, v]) => has(v));
-  return `<div class="card-h"><h2>Before 9:30</h2><span class="count mono ${n === 6 ? 'pos' : 'muted'}">${n}/6</span></div>` + numbered([
+  return `<div class="card-h"><h2>Before 9:30</h2><span class="count mono ${n === PRE_DONE.length ? 'pos' : 'muted'}">${n}/${PRE_DONE.length}</span></div>` + numbered([
     ["Yesterday's daily", esc(prev)],
     ['Daily bias', t.bias ? `<span class="${t.bias === 'bull' ? 'pos' : t.bias === 'bear' ? 'neg' : ''}">${esc(BIAS[t.bias])}</span>` : ''],
     ['Expected profile', esc(profLabel(t.profile))],
     ['SMT at the key level', esc(smt)],
-    ['Invalidation', has(t.inval) ? `<span class="mono">${esc(t.inval)}</span>` : ''],
-    has(t.draw) || !plan.length ? ['Draw', has(t.draw) ? `<span class="mono">${esc(t.draw)}</span>` : '']
+    ['Took the level', (t.took || []).length ? esc(t.took.join(', ')) : ''],
+    ...(has(t.inval) ? [['Invalidation (old)', `<span class="mono">${esc(t.inval)}</span>`]] : []),
+    has(t.draw) || t.noDraw || !plan.length ? ['Draw', has(t.draw) ? `<span class="mono">${esc(t.draw)}</span>` : t.noDraw ? '<span class="muted">No draw today</span>' : '']
       : ['Plan', `<dl class="kv tight">${plan.map(([k, v]) => `<div><dt>${k}</dt><dd>${esc(v)}</dd></div>`).join('')}</dl>`],   // entries written before the draw replaced the plan
   ]);
 }
@@ -1052,7 +1089,8 @@ function postBlock(t) {
     ['Profile that happened', t.actual ? `${esc(profLabel(t.actual))} ${hit}` : ''],
     ['Bias', nf ? na : t.biasOk ? `${tag(t.biasOk === 'right' ? 'Right' : 'Wrong', t.biasOk === 'right' ? 'good' : 'bad')}${t.biasOk === 'wrong' && (has(t.failSign) || t.failTime) ? `<p class="fail">${t.failTime ? `<span class="mono">${esc(t.failTime)} ET</span> · ` : ''}${esc(t.failSign || '')}</p>` : ''}` : ''],
     ['Draw', nf ? na : t.drawHit ? tag(t.drawHit === 'yes' ? 'Reached' : 'Not reached', t.drawHit === 'yes' ? 'good' : 'bad') : ''],
-    ['Followed my rules', t.followed === true ? tag('Yes', 'good') : t.followed === false ? tag('No', 'bad') : ''],
+    ['Bias invalidated', t.invalidated ? `${tag(INVAL[t.invalidated], t.invalidated === 'no' ? 'good' : 'bad')}${has(t.invalWhy) ? `<p class="fail">${esc(t.invalWhy)}</p>` : ''}` : ''],
+    ['Followed my rules', sessFollowed(t) === true ? tag('Yes', 'good') : sessFollowed(t) === false ? tag('No', 'bad') : ''],
     ['Lesson', has(t.lesson) ? `<q class="lesson">${esc(t.lesson)}</q>` : ''],
   ]);
 }
@@ -1061,7 +1099,7 @@ function logBlock(t) {
   const rows = t.log || [];
   const dir = x => LOG_HAS_DIR(x.kind) && BIAS[x.dir] ? `<span class="${x.dir === 'bull' ? 'pos' : x.dir === 'bear' ? 'neg' : 'muted'}">${esc(BIAS[x.dir])}</span>` : '';
   return `<div class="card-h"><h2>How the day unfolded</h2><span class="muted small">${plural(rows.length, 'step')}</span></div>` + (rows.length
-    ? `<ol class="tl">${rows.map((x, i) => `<li><span class="tl-t mono">${pad2(i + 1)}</span><div><div class="tl-k">${tag(LOG_KIND[x.kind] || LOG_KIND.note, x.kind === 'inval' ? 'bad' : '')}${dir(x)}</div>${has(x.text) ? `<p>${esc(x.text)}</p>` : ''}</div></li>`).join('')}</ol>`
+    ? `<ol class="tl">${rows.map((x, i) => `<li><span class="tl-t mono">${x.t ? esc(x.t) : pad2(i + 1)}</span><div><div class="tl-k">${tag(LOG_KIND[x.kind] || LOG_KIND.note, x.kind === 'inval' ? 'bad' : '')}${dir(x)}</div>${has(x.text) ? `<p>${esc(x.text)}</p>` : ''}</div></li>`).join('')}</ol>`
     : `<p class="empty">No steps logged. <a class="link" href="#edit/${t.id}">Add them</a></p>`);
 }
 function mgmtBlock(t) {
@@ -1119,8 +1157,8 @@ async function viewForm(id) {
     prevType: '', prevSide: '', bias: '', profile: '', smt: [], inval: '', draw: '', log: [], trades: [],
     actual: '', biasOk: '', drawHit: '', followed: null, lesson: '', reasons: [], missed: false, review: {}, images: [], created: Date.now(),
   };
-  d.smt = d.smt || []; d.log = d.log || []; d.trades = d.trades || []; d.reasons = d.reasons || []; d.review = d.review || {}; d.images = d.images || [];
-  d.trades.forEach(t => { t.exits = t.exits || []; t.mistakes = t.mistakes || []; t.review = t.review || {}; });
+  d.smt = d.smt || []; d.took = d.took || []; d.log = d.log || []; d.trades = d.trades || []; d.reasons = d.reasons || []; d.review = d.review || {}; d.images = d.images || [];
+  d.trades.forEach(t => { t.exits = t.exits || []; t.mistakes = t.mistakes || []; t.broke = t.broke || []; t.review = t.review || {}; });
   const imgs = (await Promise.all(d.images.map(i => DB.get('images', i)))).filter(Boolean);
   const form = { d, imgs: imgs.map(i => ({ ...i, url: trackUrl(i.blob) })), removed: [] };
 
@@ -1146,14 +1184,15 @@ async function viewForm(id) {
             <div class="q-sub" id="q-side" ${d.prevType === 'inside' ? 'hidden' : ''}><span>Level engaged</span>${seg('prevSide', Object.entries(PREV_SIDE), d.prevSide)}</div></div>`)}
           ${qrow(2, 'Daily bias', seg('bias', Object.entries(BIAS), d.bias, 'pn'))}
           ${qrow(3, 'Profile expected', seg('profile', Object.entries(PROFILES), d.profile))}
-          ${qrow(4, 'SMT at the key level: which index failed?', chips('smt', SMT_OPTS, d.smt))}
-          ${qrow(5, 'Invalidation level', `<input class="q-in mono" type="text" inputmode="decimal" data-f="inval" value="${esc(d.inval)}" placeholder="One price, e.g. 30,461.7">`)}
-          ${qrow(6, 'Draw: the level you expect price to reach', `<input class="q-in mono" type="text" inputmode="decimal" data-f="draw" value="${esc(d.draw || '')}" placeholder="One price, e.g. 30,091.1">`)}
+          ${qrow(4, 'The relevant level: who took it, who failed to?', `<div class="q-subs">
+            <div class="q-sub"><span>Took the level</span>${chips('took', SMT_OPTS, d.took)}</div>
+            <div class="q-sub"><span>Failed to take it (SMT)</span>${chips('smt', SMT_OPTS, d.smt)}</div></div>`)}
+          ${qrow(5, 'Draw: the level you expect price to reach, if there is one', `<div class="q-subs"><input class="q-in mono" type="text" inputmode="decimal" data-f="draw" value="${esc(d.draw || '')}" placeholder="One price, e.g. 30,091.1" ${d.noDraw ? 'disabled' : ''}>${seg('noDraw', [['no', 'There is a draw'], ['yes', 'No draw today']], d.noDraw ? 'yes' : 'no')}</div>`)}
         </ol>
       </section>
 
       <section class="card fs">
-        <div class="sec-h"><div><h2>How the day unfolded</h2><p class="sec-sub">One line per change of mind or action, in the order it happened. A read that got invalidated stays where it is; add the new one under it.</p></div></div>
+        <div class="sec-h"><div><h2>How the day unfolded</h2><p class="sec-sub">One line per change of mind or action, with its time (ET), in the order it happened. The last read before an entry is the read in force for that trade. A read that got invalidated stays where it is; add the new one under it.</p></div></div>
         <div class="lines" id="log"></div>
         <button type="button" class="btn small" id="log-add">Add a step</button>
       </section>
@@ -1182,11 +1221,12 @@ async function viewForm(id) {
         <div class="sec-h"><div><h2>After the session</h2><p class="sec-sub">Fill this in during your review, with a cool head.</p></div><span class="count mono" id="post-n"></span></div>
         <ol class="qs">
           ${qrow(1, 'The profile that actually happened', seg('actual', Object.entries(PROFILES), d.actual))}
-          <li class="q-row q-na" id="q-na"><span class="q-num mono">—</span><div class="q-body"><p class="q-title">No valid framework today</p><p class="small muted" style="margin:0">The daily read was neutral, so there is no bias or draw to grade: questions 02 and 03 are skipped and left out of your stats.</p></div></li>
+          <li class="q-row q-na" id="q-na"><span class="q-num mono">—</span><div class="q-body"><p class="q-title">No valid framework today</p><p class="small muted" style="margin:0">The daily read was neutral, so there is no bias or draw to grade: questions 02, 03 and 04 are skipped and left out of your stats.</p></div></li>
           ${qrow(2, 'Was the bias right?', seg('biasOk', [['right', 'Right'], ['wrong', 'Wrong']], d.biasOk, 'pn'))}
           ${qrow(3, 'Was the draw reached?', seg('drawHit', [['yes', 'Reached'], ['no', 'Not reached']], d.drawHit || '', 'pn'))}
-          ${qrow(4, 'Did I follow my rules?', seg('followed', [['yes', 'Yes'], ['no', 'No']], d.followed === true ? 'yes' : d.followed === false ? 'no' : '', 'pn'))}
-          ${qrow(5, 'One sentence of lesson. Only one.', `<input class="q-in" type="text" maxlength="180" data-f="lesson" value="${esc(d.lesson)}" placeholder="The one thing to remember from today">`)}
+          ${qrow(4, 'Was the bias invalidated?', `<div class="q-subs">${seg('invalidated', Object.entries(INVAL), d.invalidated || '')}<input class="q-in" type="text" data-f="invalWhy" value="${esc(d.invalWhy || '')}" placeholder="Why do you think so? The sign you saw, and when"></div>`)}
+          ${qrow(5, 'Did I follow my rules? (one answer per trade sits in each trade block)', seg('followed', [['yes', 'Yes'], ['no', 'No']], d.followed === true ? 'yes' : d.followed === false ? 'no' : '', 'pn'))}
+          ${qrow(6, 'One sentence of lesson. Only one.', `<input class="q-in" type="text" maxlength="180" data-f="lesson" value="${esc(d.lesson)}" placeholder="The one thing to remember from today">`)}
         </ol>
       </section>
 
@@ -1208,11 +1248,12 @@ async function viewForm(id) {
   const refresh = () => {
     $('#preview').innerHTML = previewHTML(d);
     const pn = countDone(PRE_DONE, d), [qn, qof] = postDone(d);
-    $('#pre-n').textContent = pn + '/6'; $('#pre-n').classList.toggle('pos', pn === 6);
+    $('#pre-n').textContent = pn + '/' + PRE_DONE.length; $('#pre-n').classList.toggle('pos', pn === PRE_DONE.length);
     $('#post-n').textContent = qn + '/' + qof; $('#post-n').classList.toggle('pos', qn === qof);
     const nf = NO_FRAME(d);
     $('#q-na').hidden = !nf;
-    ['biasOk', 'drawHit'].forEach(k => { $(`[data-seg="${k}"]`, f).closest('.q-row').hidden = nf; });
+    ['biasOk', 'drawHit', 'invalidated'].forEach(k => { $(`[data-seg="${k}"]`, f).closest('.q-row').hidden = nf; });
+    $('[data-seg="followed"]', f).closest('.q-row').hidden = d.trades.length > 0;   // with trades, validity is answered per trade
   };
 
   // ── trades: one block each, every control scoped to its block
@@ -1222,7 +1263,7 @@ async function viewForm(id) {
   const newTrade = () => ({
     id: uid(), time: '', instrument: prefs.get('lastInstr', (st.instruments[0] || {}).name || ''), dir: 'long', entryTf: '',
     entry: '', stop: '', target: '', exit: '', size: '', riskUsd: prefs.get('lastRisk', 50), pnl: '',
-    exits: [], stopMgmt: '', mistakes: [], takeAgain: '', review: {},
+    exits: [], stopMgmt: '', mistakes: [], broke: [], takeAgain: '', review: {},
   });
   const card = i => $(`#trades .trade[data-ti="${i}"]`);
   const tradeCard = (t, i) => {
@@ -1233,7 +1274,7 @@ async function viewForm(id) {
         <label class="fld"><span>Instrument</span><select data-t="instrument">${insts.map(x => `<option ${x === t.instrument ? 'selected' : ''}>${esc(x)}</option>`).join('')}</select></label>
         <div class="fld"><span>Direction</span>${tseg('dir', [['long', 'Long'], ['short', 'Short']], t.dir, 'pn')}</div>
         <label class="fld"><span>Entry time (ET)</span><input type="time" data-t="time" value="${esc(t.time || '')}"></label>
-        <div class="fld"><span>Entry timeframe</span>${tseg('entryTf', [['15m', '15m'], ['5m', '5m'], ['3m', '3m']], t.entryTf || '')}</div>
+        <div class="fld"><span>Entry timeframe</span>${tseg('entryTf', ENTRY_TF.map(x => [x, x]), t.entryTf || '')}</div>
         ${tnum('entry', 'Entry price', t.entry)}
         ${tnum('stop', 'Stop loss', t.stop)}
         ${tnum('riskUsd', 'Risk ($)', t.riskUsd)}
@@ -1243,6 +1284,9 @@ async function viewForm(id) {
         ${tnum('target', 'Target', t.target, 'Leave empty to use the draw')}
         ${has(t.rOverride) ? tnum('rOverride', 'Result in R (manual)', t.rOverride, 'Clear it to use the prices') : ''}
       </div>
+      <div class="fld"><span>Did I follow my rules on this trade? <span class="muted">Valid = yes</span></span>${tseg('followed', [['yes', 'Yes · valid'], ['no', 'No · invalid']], t.followed === true ? 'yes' : t.followed === false ? 'no' : '', 'pn')}</div>
+      <div data-broke ${t.followed === false ? '' : 'hidden'}><p class="sub-h">Which rule broke</p>${tchips('broke', RULE_BREAKS, t.broke || [], 'bad')}</div>
+      <div class="fld"><span>Did I trade the pair that led the move?</span>${tseg('ledPair', [['yes', 'Yes'], ['no', 'No']], t.ledPair || '')}<span class="hint">Manipulation: the pair that failed to take the level leads. Breakout: the pair that took it and kept going.</span></div>
       <div class="fld"><span>Stop loss</span>${tseg('stopMgmt', Object.entries(STOP_MGMT), t.stopMgmt || '')}</div>
       <div><p class="sub-h">Exits <span class="muted">· only if you took partials</span></p>
         <div class="lines" data-exits></div>
@@ -1320,16 +1364,17 @@ async function viewForm(id) {
     const g = b.closest('[data-tseg]'), ch = b.closest('[data-tchips]');
     if (g) {
       const k = g.dataset.tseg, v = b.dataset.v;
-      t[k] = v;
+      t[k] = k === 'followed' ? v === 'yes' : v;
       $$('button', g).forEach(x => x.setAttribute('aria-pressed', String(x === b)));
+      if (k === 'followed') { $('[data-broke]', c).hidden = t.followed !== false; if (t.followed) { t.broke = []; $$('[data-tchips="broke"] button', c).forEach(x => x.setAttribute('aria-pressed', 'false')); } }
       if (k === 'stopMgmt' && v === 'widened' && !t.mistakes.includes(MISTAKES[0])) {   // moving the stop away is always a tagged mistake
         t.mistakes.push(MISTAKES[0]);
         $$('[data-tchips="mistakes"] button', c).forEach(x => x.setAttribute('aria-pressed', String(t.mistakes.includes(x.dataset.v))));
       }
     } else if (ch) {
-      const v = b.dataset.v;
-      t.mistakes = t.mistakes.includes(v) ? t.mistakes.filter(x => x !== v) : [...t.mistakes, v];
-      b.setAttribute('aria-pressed', String(t.mistakes.includes(v)));
+      const v = b.dataset.v, name = ch.dataset.tchips;
+      t[name] = t[name].includes(v) ? t[name].filter(x => x !== v) : [...t[name], v];
+      b.setAttribute('aria-pressed', String(t[name].includes(v)));
     } else return;
     updateTrade(i); refresh();
   });
@@ -1389,13 +1434,14 @@ async function viewForm(id) {
     $('#log').innerHTML = d.log.map((x, i) => `<div class="line log" data-i="${i}">
       <select data-l="kind" aria-label="Kind of step">${Object.entries(LOG_KIND).map(([k, l]) => `<option value="${k}" ${k === x.kind ? 'selected' : ''}>${l}</option>`).join('')}</select>
       <select data-l="dir" aria-label="Direction of the read" ${LOG_HAS_DIR(x.kind) ? '' : 'disabled'}><option value="">Direction</option>${Object.entries(BIAS).map(([k, l]) => `<option value="${k}" ${LOG_HAS_DIR(x.kind) && k === x.dir ? 'selected' : ''}>${l}</option>`).join('')}</select>
+      <input type="time" data-l="t" value="${esc(x.t || '')}" aria-label="Time of this step (ET)" title="Time of this step (ET)">
       <input type="text" data-l="text" value="${esc(x.text || '')}" placeholder="${x.kind === 'inval' ? 'What invalidated it' : LOG_HAS_DIR(x.kind) ? 'What you saw, and why' : 'What you did'}" aria-label="Description">
       <button type="button" class="icon-btn" data-rm-line aria-label="Remove this step">×</button></div>`).join('');
   };
   $('#log-add').addEventListener('click', () => {
     const NEXT = { read: 'inval', inval: 'flip', flip: 'entry', entry: 'manage', manage: 'exit', exit: 'note', note: 'note' };
     const last = d.log[d.log.length - 1];
-    d.log.push(last ? { kind: NEXT[last.kind], dir: '', text: '' } : { kind: 'read', dir: d.bias || '', text: '' });
+    d.log.push(last ? { kind: NEXT[last.kind], dir: '', t: '', text: '' } : { kind: 'read', dir: d.bias || '', t: '', text: '' });
     renderLog();
     $('#log .line:last-child [data-l="text"]').focus();
   });
@@ -1424,12 +1470,13 @@ async function viewForm(id) {
     const k = g.dataset.seg, v = b.dataset.v;
     $$('button', g).forEach(x => x.setAttribute('aria-pressed', String(x === b)));
     if (k === 'followed') d.followed = v === 'yes';
+    else if (k === 'noDraw') { d.noDraw = v === 'yes'; if (d.noDraw) { d.draw = ''; $('[data-f="draw"]', f).value = ''; } $('[data-f="draw"]', f).disabled = d.noDraw; d.trades.forEach((_, i) => updateTrade(i)); }
     else if (k === 'missed') { d.missed = v === 'yes'; renderNtReview(); }
     else d[k] = v;
     if (k === 'prevType') $('#q-side').hidden = v === 'inside';
     if (k === 'bias' && NO_FRAME(d)) {
-      d.biasOk = ''; d.drawHit = '';
-      $$('[data-seg="biasOk"] button, [data-seg="drawHit"] button', f).forEach(x => x.setAttribute('aria-pressed', 'false'));
+      d.biasOk = ''; d.drawHit = ''; d.invalidated = ''; d.invalWhy = '';
+      $$('[data-seg="biasOk"] button, [data-seg="drawHit"] button, [data-seg="invalidated"] button', f).forEach(x => x.setAttribute('aria-pressed', 'false'));
     }
     if (k === 'bias' || k === 'prevType' || k === 'prevSide') d.trades.forEach((_, i) => updateTrade(i));   // room to the draw and flips depend on the read
     refresh();
@@ -1439,7 +1486,7 @@ async function viewForm(id) {
     if (!b) return;
     const name = g.dataset.chips, v = b.dataset.v, on = d[name].includes(v);
     let next = on ? d[name].filter(x => x !== v) : [...d[name], v];
-    if (name === 'smt' && !on) next = v === 'None' ? ['None'] : next.filter(x => x !== 'None');
+    if ((name === 'smt' || name === 'took') && !on) next = v === 'None' ? ['None'] : next.filter(x => x !== 'None');
     d[name] = next;
     $$('button', g).forEach(x => x.setAttribute('aria-pressed', String(next.includes(x.dataset.v))));
     refresh();
@@ -1498,7 +1545,7 @@ function qrow(n, q, ctrl) {
 function sessionPV(d) {
   const pn = countDone(PRE_DONE, d), [qn, qof] = postDone(d);
   const bar = (n, of) => `<span class="pv-dots">${Array.from({ length: of }, (_, i) => `<i class="${i < n ? 'on' : ''}"></i>`).join('')}</span>`;
-  return `<div class="pv-session"><div><span class="small muted">Before 9:30</span>${bar(pn, 6)}</div><div><span class="small muted">After the session</span>${bar(qn, qof)}</div></div>`;
+  return `<div class="pv-session"><div><span class="small muted">Before 9:30</span>${bar(pn, PRE_DONE.length)}</div><div><span class="small muted">After the session</span>${bar(qn, qof)}</div></div>`;
 }
 function previewHTML(d) {
   const views = d.trades.map(t => asTrade(d, t)), rs = views.map(tradeR), done = rs.filter(r => r != null);

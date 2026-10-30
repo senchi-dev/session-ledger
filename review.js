@@ -154,7 +154,7 @@ function weekHTML(arg) {
       <h2 style="margin-bottom:12px">Sessions</h2>
       <ul class="week-days">${sess.map(s => { const tr = rowsOf(s).filter(t => t.kind === 'trade'), rs = tr.map(tradeR).filter(r => r != null), net = rs.reduce((a, b) => a + b, 0);
         return `<li><a href="#trade/${s.id}"><span class="mono muted">${weekday(s.date)} ${fmtDate(s.date).replace(/ \d{4}$/, '')}</span>
-          <span>${s.bias ? `<span class="${s.bias === 'bull' ? 'pos' : s.bias === 'bear' ? 'neg' : ''}">${esc(BIAS[s.bias])}</span>` : '<span class="muted">no read</span>'}${s.biasOk ? ` ${s.biasOk === 'right' ? '<span class="pos">✓</span>' : '<span class="neg">✗</span>'}` : ''}${s.followed === false ? ' ' + tag('rules broken', 'bad') : ''}</span>
+          <span>${s.bias ? `<span class="${s.bias === 'bull' ? 'pos' : s.bias === 'bear' ? 'neg' : ''}">${esc(BIAS[s.bias])}</span>` : '<span class="muted">no read</span>'}${s.biasOk ? ` ${s.biasOk === 'right' ? '<span class="pos">✓</span>' : '<span class="neg">✗</span>'}` : ''}${sessFollowed(s) === false ? ' ' + tag('rules broken', 'bad') : ''}</span>
           <span class="mono ${cls(net)}">${tr.length ? (rs.length ? fmtR(net) : 'open') + ` <span class="muted">· ${plural(tr.length, 'trade')}</span>` : '<span class="muted">no trade</span>'}</span></a></li>`; }).join('')}</ul>
     </article>
     <article class="card">${bars('Mistakes this week', mistakes, 'net R per tag')}</article>
@@ -202,7 +202,7 @@ function checkpointHTML(arg) {
   const weakest = reads.filter(([, r]) => r && r.n >= 10).sort((a, b) => a[1].p - b[1].p)[0];
   const leaks = groupBy(st.closed, t => t.mistakes || [], MISTAKES).filter(g => g.netR < 0).sort((a, b) => a.netR - b.netR).slice(0, 3);
   const dims = [
-    ['Profile', t => t.profile, PROFILE_ORDER, profLabel], ['Entry time', timeBucket, BUCKETS], ['Entry timeframe', t => t.entryTf, ['15m', '5m', '3m']],
+    ['Profile', t => t.profile, PROFILE_ORDER, profLabel], ['Entry time', timeBucket, BUCKETS], ['Entry timeframe', t => t.entryTf, ENTRY_TF],
     ['Stop handling', t => t.stopMgmt, Object.keys(STOP_MGMT), k => STOP_MGMT[k]], ['Room at entry', t => { const r = roomR(t); return r == null ? null : r >= 2 ? ROOM[0] : ROOM[1]; }, ROOM],
     ['Yesterday', t => t.prevType, Object.keys(PREV_TYPE), k => PREV_TYPE[k]], ['Read', readRel, READ_REL], ['Weekday', t => weekday(t.date), ['Mon', 'Tue', 'Wed', 'Thu', 'Fri']],
   ];
