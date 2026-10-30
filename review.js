@@ -212,7 +212,7 @@ function checkpointHTML(arg) {
   const signs = sess.flatMap(s => (s.log || []).filter(x => x.kind === 'inval' && has(x.text)).map(x => x.text)).concat(sess.filter(s => s.biasOk === 'wrong' && has(s.lesson)).map(s => s.lesson));
   const done = (S.settings.checkpoints || {})[ver];
 
-  const verdict = !all || all.n < 30 ? ['muted', `Too early: ${all ? all.n : 0} of 30 trades before expectancy says anything.`]
+  const verdict = !all || all.n < 100 ? ['muted', `Too early: ${all ? all.n : 0} of 100 trades for a rough read (about 200 to pin it within ±0.2R). Trust the range, not the average.`]
     : all.lo > 0 ? ['pos', 'Positive so far: even the low end of the range is above zero.']
     : all.hi < 0 ? ['neg', 'Losing as traded: even the high end of the range is below zero.']
     : ['muted', 'Not distinguishable from zero yet. Keep collecting before changing the system itself.'];
