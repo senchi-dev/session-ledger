@@ -1622,29 +1622,36 @@ async function saveForm(form) {
 
 // ───────────────────────── playbook ─────────────────────────
 const PLAYBOOK = [
-  { n: '01', when: 'Before Asia', title: 'Daily bias: context', items: [
-    'Mark the relevant highs and lows of the last 30 daily candles.',
+  { n: '01', when: 'Before Asia', title: 'Daily framework: sets the bias', items: [
+    'Mark the relevant highs and lows of the last 30 daily candles on both pairs. Chain the failure swings (0.8 fib on the swing candle). A separation needs the 0.65 fib on the first candle, tested by the second.',
     ['How did yesterday engage them?', ['<b>Manipulation</b> → reversal. Trade away from the swing.', '<b>Closure through</b> → continuation.', '<b>Range</b> → neutral. No trade.']],
-    'Write down the <b>draw</b> and the <b>invalidation</b>: 50% of yesterday’s range.',
+    'Level taken by <b>one pair only</b> = SMT, still alive. Taken by <b>both</b> = gone.',
+    'The framework alone sets the bias. <b>No clear profile does not mean no framework.</b>',
+    'Write down the <b>draw</b> (optional: some days there is none) and the <b>invalidation point</b>: the EQ (0.5) of yesterday’s close → opposing wick.',
   ] },
-  { n: '02', when: '18:00 → 8:00', title: 'Profile: 18:00 prints, 1:00 confirms, 8:00 executes', items: [
+  { n: '02', when: '18:00 → 8:00', title: 'Profile: confirms the bias, never sets it', items: [
     '<b>18:00 · Asia</b>: context only. Did it make the opposing extreme at a 1H+ POI?',
     ['<b>1:00 · London</b>: confirmation. Did it make the extreme, or hold away from the Asia one?', ['<b>Kill check</b>: London already expanded most of the way to the draw → no trade.']],
     ['<b>8:00 · New York</b>: execution. Name the profile:', [
       '<b>18:00 or 1:00 reversal</b>: the extreme is in. Wait for a <b>breakthrough</b>: a continuation signature on the pullback.',
       '<b>8:00 reversal</b>: the extreme isn’t in yet. Wait for a <b>reversal</b>: NY runs the level into a POI, then a CISD confirms.']],
-    'The profile answers “breakthrough or reversal?” before 9:30.',
+    'The profile answers “breakthrough or reversal?” before 9:30. If it contradicts the daily bias, the bias is in question: log it with the time.',
   ] },
-  { n: '03', when: 'After 9:30', title: 'Entry: two confirmations', items: [
+  { n: '03', when: 'Structure', title: 'Structure: higher timeframe down to lower', items: [
+    'Read it top-down: <b>4H → 1H → 30m → 15m → 5m</b>. Each level has to agree with the one above before you go lower.',
+    'The <b>leader</b> is not always the pair that took the level. In a manipulation, the pair that <b>fails</b> to take it is weaker and leads the move away. In a breakout, the pair that took it and kept going leads.',
+    'Trade the pair that is <b>leading the move</b>.',
+  ] },
+  { n: '04', when: 'After 9:30 (or overnight on 30m / 1H)', title: 'Entry: two confirmations', items: [
     ['<b>CISD #1 · 15m</b>, at the POI. Confirms the reversal.', ['18:00 and 1:00 profiles: already happened overnight.', '8:00 profile: happens in NY.']],
-    ['<b>CISD #2 · 15m, 5m or 3m</b>, after 9:30, on the pullback: the closure through the opposing candles. <b>This is the entry.</b>', ['Pick the timeframe by how fast price is moving: faster move → lower timeframe.', 'A lower timeframe gives a tighter stop for the same setup.']],
+    ['<b>CISD #2</b> on the pullback: the closure through the opposing candles (valid opposing candles ≥ 50% body). <b>This is the entry.</b>', ['Entry timeframe: <b>1H · 30m · 15m · 5m · 4m · 3m</b>. Faster move → lower timeframe; lower gives a tighter stop for the same setup.', '4m after 9:30; 30m or 1H when trading the overnight sessions.']],
     '<b>Stop</b> beyond the swing · <b>partial</b> at 2R.',
     'Only when <b>bias and profile agree</b>. Otherwise, no trade.',
   ] },
 ];
-const PB_TF = [['Daily', 'bias'], ['7H', 'profile'], ['15m', 'reversal CISD'], ['15m · 5m · 3m', 'entry CISD']];
+const PB_TF = [['Daily', 'framework · bias'], ['7H', 'profile · confirms'], ['4H → 5m', 'structure'], ['1H → 3m', 'entry CISD']];
 const PB_KILL = [
-  'The opposing run goes through <b>50% of yesterday’s range</b> (low → high). Bullish: the low of day stays above it. Bearish: the high of day stays below it.',
+  'The bias is <b>invalidated</b>: price <b>closes</b> beyond the EQ of yesterday’s close → opposing wick, meaningfully. A wick through it that snaps back does not count.',
   'A <b>15m close through the high or low of the day</b> your trade depends on.',
   '<b>London exhausted the range</b> toward the draw.',
 ];
@@ -1666,19 +1673,24 @@ function viewPlaybook() {
     <article class="card pb-step pb-kill">
       <div class="pb-h"><span class="pb-n mono">✕</span><div><p class="pb-when">Any one → no trade</p><h2>Invalidations</h2></div></div>
       ${pbList(PB_KILL)}
-      <p class="pb-foot">Log the entry timeframe on every trade. The dashboard shows results per timeframe.</p>
+      <p class="pb-foot">Log the entry timeframe on every trade, and log when the read changes. A trade is <b>valid</b> if it followed the rules in force at that moment, even if the bias flipped earlier in the day.</p>
     </article>
   </section>
   <section class="row one">
     <article class="card">
-      <div class="card-h"><h2>Rule changes</h2><span class="muted small">each change starts a new version; results stay comparable</span></div>
+      <div class="card-h"><h2>Rule changes</h2><span class="muted small">a refinement is just noted; a change to the trade itself starts a new version</span></div>
       <ol class="versions">${versions().map(v => `<li><span class="mono">v${v.n}</span><span class="muted mono">${v.from ? 'from ' + fmtDate(v.from) : 'from the start'}</span><span>${esc(v.change)}</span></li>`).join('')}</ol>
-      <div class="ver-add"><input class="search" id="ver-text" placeholder="The rule you’re changing, in one sentence" aria-label="Rule change"><input type="date" class="sel" id="ver-from" value="${nextDay(today())}" aria-label="Starts on"><button type="button" class="btn" id="ver-go" disabled>Record the change</button></div>
+      ${(S.settings.refinements || []).length ? `<p class="small muted" style="margin:14px 0 6px">Refinements (same model, no new version)</p><ol class="versions">${S.settings.refinements.map(r => `<li><span class="muted mono">${fmtDate(r.at)}</span><span>${esc(r.text)}</span></li>`).join('')}</ol>` : ''}
+      <div class="ver-add"><input class="search" id="ver-text" placeholder="The rule, in one sentence" aria-label="Rule change"><input type="date" class="sel" id="ver-from" value="${nextDay(today())}" aria-label="Starts on"><label class="small muted" style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="ver-new"> starts a new version</label><button type="button" class="btn" id="ver-go" disabled>Record</button></div>
     </article>
   </section>`;
   const vt = $('#ver-text'), vg = $('#ver-go');
   vt.addEventListener('input', () => { vg.disabled = !has(vt.value); });
-  vg.addEventListener('click', async () => { await addVersion(vt.value, $('#ver-from').value || nextDay(today())); toast(`Version ${currentVersion().n} recorded`); viewPlaybook(); });
+  vg.addEventListener('click', async () => {
+    if ($('#ver-new').checked) { await addVersion(vt.value, $('#ver-from').value || nextDay(today())); toast(`Version ${currentVersion().n} recorded`); }
+    else { S.settings.refinements = [...(S.settings.refinements || []), { at: today(), text: vt.value.trim() }]; await saveSettings(); toast('Refinement noted, data stays in one version'); }
+    viewPlaybook();
+  });
 }
 
 // ───────────────────────── settings ─────────────────────────
