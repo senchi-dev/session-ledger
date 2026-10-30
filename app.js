@@ -70,7 +70,9 @@ const CHECKS = [
 ];
 const MISTAKES = ['Moved stop away', 'Ignored exit rule', 'Entered early', 'Chased', 'Oversized', 'Revenge trade', 'Traded into news', 'Outside my window', 'No stop loss', 'FOMO'];
 const NOTRADE_REASONS = ['No bias', 'High-impact news', '9:30 didn’t deliver', 'Profile invalid', 'Setup came too late', 'Pairs disagreed', 'No room for 2R', 'Other'];
-const IMG_LABELS = ['HTF / daily', 'Setup / profile', 'Entry', 'Exit / result', 'Position', 'Other'];
+const IMG_LABELS = ['Daily framework / Bias', '7H profiles', 'Structure', 'Entry'];
+const IMG_OLD = { 'HTF / daily': 'Daily framework / Bias', 'Setup / profile': '7H profiles' };
+const imgLabel = l => IMG_OLD[l] || l;
 const BUCKETS = ['Pre-open', '9:30–10:30', '10:30–12:00', 'After 12:00'];
 const Q = {
   goodWin: ['What would you improve with your execution on this trade?', 'How could you have managed this trade to increase the profit?', 'What can you do to repeat this type of trade in the future?'],
@@ -976,7 +978,7 @@ async function viewDetail(id) {
   const s = findSession(id);
   if (!s) { app.innerHTML = '<p class="empty">This session doesn’t exist anymore. <a class="link" href="#trades">Back to trades</a></p>'; return; }
   const imgs = (await Promise.all((s.images || []).map(i => DB.get('images', i)))).filter(Boolean);
-  const shots = imgs.map(i => ({ url: trackUrl(i.blob), label: i.label }));
+  const shots = imgs.map(i => ({ url: trackUrl(i.blob), label: imgLabel(i.label) }));
   const views = (s.trades || []).map(t => asTrade(s, t));
   const rs = views.map(tradeR), done = rs.filter(r => r != null);
   const net = done.reduce((a, b) => a + b, 0), pnl = views.map(tradePnl).filter(p => p != null).reduce((a, b) => a + b, 0);
@@ -1459,7 +1461,7 @@ async function viewForm(id) {
 
   const renderThumbs = () => {
     $('#thumbs').innerHTML = form.imgs.map((im, i) => `<figure class="thumb"><img src="${im.url}" alt="${esc(im.label)}">
-      <figcaption><select data-img="${i}" aria-label="Screenshot label">${IMG_LABELS.map(l => `<option ${l === im.label ? 'selected' : ''}>${l}</option>`).join('')}</select>
+      <figcaption><select data-img="${i}" aria-label="Screenshot label">${(IMG_LABELS.includes(imgLabel(im.label)) ? IMG_LABELS : [...IMG_LABELS, im.label]).map(l => `<option ${l === imgLabel(im.label) ? 'selected' : ''}>${l}</option>`).join('')}</select>
       <button type="button" class="icon-btn" data-rm="${i}" aria-label="Remove screenshot">×</button></figcaption></figure>`).join('');
   };
 
@@ -1499,7 +1501,7 @@ async function viewForm(id) {
     if (!list.length) return;
     for (const file of list) {
       const blob = await compress(file);
-      form.imgs.push({ id: uid(), blob, url: trackUrl(blob), label: IMG_LABELS[Math.min(form.imgs.length, 3)], isNew: true });
+      form.imgs.push({ id: uid(), blob, url: trackUrl(blob), label: IMG_LABELS[Math.min(form.imgs.length, IMG_LABELS.length - 1)], isNew: true });
     }
     renderThumbs();
     toast(plural(list.length, 'screenshot') + ' added');
