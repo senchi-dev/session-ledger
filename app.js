@@ -1446,7 +1446,7 @@ async function viewForm(id) {
     const msg = $('#mt5-msg'), btn = $('#mt5-pull');
     btn.disabled = true; msg.textContent = 'Asking MetaTrader 5…';
     try {
-      const r = await fetch(`http://127.0.0.1:8765/trades?date=${encodeURIComponent(d.date)}`, { signal: AbortSignal.timeout(180000) });
+      const r = await fetch(`http://127.0.0.1:8765/trades?date=${encodeURIComponent(d.date)}`, { targetAddressSpace: 'loopback', signal: AbortSignal.timeout(180000) });
       const j = await r.json();
       if (!r.ok) throw new Error(j.error || 'bridge error ' + r.status);
       const prev = isoDay(new Date(Date.parse(d.date + 'T12:00:00') - 864e5));
@@ -1454,7 +1454,7 @@ async function viewForm(id) {
     } catch (err) {
       console.error(err);
       msg.textContent = err.name === 'TypeError' || err.name === 'TimeoutError'
-        ? 'Can’t reach the MT5 bridge. Double-click mt5-bridge/start.command (MetaTrader 5 open and logged in), then try again.'
+        ? 'Can’t reach the MT5 bridge. Start it (double-click mt5-bridge/start.command, MetaTrader 5 open and logged in) and, if Chrome asks, allow this site to connect to devices on your network.'
         : 'MT5: ' + err.message;
     } finally { btn.disabled = false; }
   });
