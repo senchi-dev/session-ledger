@@ -24,7 +24,8 @@ const today = () => isoDay(new Date());
 const WD = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const weekday = d => d ? WD[new Date(d + 'T12:00:00').getDay()] : '';
 const fmtDate = d => d ? new Date(d + 'T12:00:00').toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) : '—';
-const byTime = (a, b) => ((a.date || '') + (a.time || '')).localeCompare((b.date || '') + (b.time || ''));
+// within a trading day the evening trades (18:00 ET on) come before the morning ones
+const byTime = (a, b) => (a.date || '').localeCompare(b.date || '') || (sessMin(a.time) ?? -1) - (sessMin(b.time) ?? -1);
 const plural = (n, w) => `${n} ${n === 1 ? w : /[^aeiou]y$/.test(w) ? w.slice(0, -1) + 'ies' : w + 's'}`;
 
 // ───────────────────────── vocabulary ─────────────────────────
@@ -145,9 +146,9 @@ const saveSettings = () => DB.put('meta', { k: 'settings', v: S.settings });
 // ───────────────────────── sessions ─────────────────────────
 // One stored record per trading session: the day's read and review once, and the trades taken in it.
 // Records written before this held one trade or one no-trade day each; toSessions() groups them by day.
-const TRADE_KEYS = ['time', 'instrument', 'dir', 'entryTf', 'entry', 'stop', 'target', 'exit', 'size', 'riskUsd', 'pnl', 'rOverride', 'exits', 'stopMgmt', 'mistakes', 'takeAgain', 'review', 'checks', 'emotion', 'followed', 'broke', 'ledPair'];
+const TRADE_KEYS = ['time', 'instrument', 'dir', 'entryTf', 'entry', 'stop', 'target', 'exit', 'size', 'riskUsd', 'pnl', 'rOverride', 'exits', 'stopMgmt', 'mistakes', 'takeAgain', 'review', 'checks', 'emotion', 'followed', 'broke', 'ledPair', 'readDir'];
 const DAY_KEYS = ['prevType', 'prevSide', 'prevDir', 'prevClose', 'bias', 'conf', 'profile', 'smt', 'inval', 'draw', 'planEntry', 'planStop', 'planPartial', 'planTarget',
-  'actual', 'biasOk', 'drawHit', 'failSign', 'failTime', 'followed', 'lesson', 'reasons', 'missed', 'took', 'invalidated', 'invalWhy', 'noDraw'];
+  'actual', 'biasOk', 'drawHit', 'failSign', 'failTime', 'followed', 'lesson', 'reasons', 'missed', 'took', 'invalidated', 'invalWhy', 'noDraw', 'unfolded'];
 function toSessions(records) {
   const groups = new Map();
   [...records].sort((a, b) => byTime(a, b) || String(a.id).localeCompare(String(b.id))).forEach(r => {
@@ -387,6 +388,7 @@ const toMin = v => { const m = /^(\d{1,2}):(\d{2})/.exec(v || ''); return m ? +m
 const sessMin = v => { const m = toMin(v); return m == null ? null : (m - 1080 + 1440) % 1440; };   // minutes since the 18:00 open, so overnight steps sort before the morning
 // the direction in force when the trade was entered: the 9:30 read, then every timed read / new read logged up to the entry time
 const readAt = t => {
+  if (t.readDir) return t.readDir;   // set on the trade itself: bullish / bearish / neutral when it was entered
   let cur = t.bias || null; const e = sessMin(t.time);
   if (e == null) return cur;
   const steps = (t.log || []).filter(x => LOG_HAS_DIR(x.kind) && x.dir && sessMin(x.t) != null).sort((a, b) => sessMin(a.t) - sessMin(b.t));
@@ -660,7 +662,7 @@ function viewDashboard() {
   <section class="row three">
     <article class="card">${bars('By daily profile', groupBy(st.closed, t => t.profile, PROFILE_ORDER, profLabel))}
       <div class="rule-gap"></div>${bars('Initial read vs a flipped read', groupBy(st.closed, readRel, READ_REL))}
-      <div class="rule-gap"></div>${bars('Direction vs the read in force at entry', groupBy(st.closed, readForce, FORCE), 'uses the timed steps of the day')}</article>
+      <div class="rule-gap"></div>${bars('Direction vs the read in force at entry', groupBy(st.closed, readForce, FORCE), 'the read you set on each trade (older days: their timed steps)')}</article>
     <article class="card">${bars('By entry time (ET)', groupBy(st.closed, timeBucket, BUCKETS))}</article>
     <article class="card">${bars('By entry timeframe', groupBy(st.closed, t => t.entryTf, ENTRY_TF))}
       <div class="rule-gap"></div>${bars('By stop handling', groupBy(st.closed, t => t.stopMgmt, Object.keys(STOP_MGMT), k => STOP_MGMT[k]))}</article>
@@ -916,7 +918,7 @@ function viewTrades() {
   if (q.out !== 'all') list = list.filter(t => q.out === 'notrade' ? t.kind === 'notrade' : t.kind === 'trade' && outcome(tradeR(t)) === q.out);
   if (q.text) {
     const s = q.text.toLowerCase();
-    list = list.filter(t => [t.instrument, t.notes, profLabel(t.profile), t.lesson, t.failSign, t.planEntry, t.planStop, t.planPartial, t.planTarget, t.draw, ...(t.log || []).map(x => x.text), ...(t.mistakes || []), ...(t.reasons || []), ...Object.values(t.review || {})]
+    list = list.filter(t => [t.instrument, t.notes, profLabel(t.profile), t.lesson, t.failSign, t.planEntry, t.planStop, t.planPartial, t.planTarget, t.draw, t.unfolded, ...(t.log || []).map(x => x.text), ...(t.mistakes || []), ...(t.reasons || []), ...Object.values(t.review || {})]
       .join(' ').toLowerCase().includes(s));
   }
   list = [...list].sort((a, b) => byTime(b, a));
@@ -1101,11 +1103,12 @@ function postBlock(t) {
 }
 
 function logBlock(t) {
-  const rows = t.log || [];
+  const rows = t.log || [], head = n => `<div class="card-h"><h2>How the day unfolded</h2>${n ? `<span class="muted small">${n}</span>` : ''}</div>`;
+  if (has(t.unfolded)) return head('') + `<p class="unfolded">${esc(t.unfolded)}</p>`;
   const dir = x => LOG_HAS_DIR(x.kind) && BIAS[x.dir] ? `<span class="${x.dir === 'bull' ? 'pos' : x.dir === 'bear' ? 'neg' : 'muted'}">${esc(BIAS[x.dir])}</span>` : '';
-  return `<div class="card-h"><h2>How the day unfolded</h2><span class="muted small">${plural(rows.length, 'step')}</span></div>` + (rows.length
+  return head(rows.length ? plural(rows.length, 'step') : '') + (rows.length   // days logged step by step before this became one paragraph
     ? `<ol class="tl">${rows.map((x, i) => `<li><span class="tl-t mono">${x.t ? esc(x.t) : pad2(i + 1)}</span><div><div class="tl-k">${tag(LOG_KIND[x.kind] || LOG_KIND.note, x.kind === 'inval' ? 'bad' : '')}${dir(x)}</div>${has(x.text) ? `<p>${esc(x.text)}</p>` : ''}</div></li>`).join('')}</ol>`
-    : `<p class="empty">No steps logged. <a class="link" href="#edit/${t.id}">Add them</a></p>`);
+    : `<p class="empty">Nothing written. <a class="link" href="#edit/${t.id}">Add it</a></p>`);
 }
 function mgmtBlock(t) {
   const rows = exitRows(t), pct = exitsPct(t), size = num(t.size), rel = readRel(t), r = tradeR(t);
@@ -1162,6 +1165,9 @@ async function viewForm(id) {
     prevType: '', prevSide: '', bias: '', profile: '', smt: [], inval: '', draw: '', log: [], trades: [],
     actual: '', biasOk: '', drawHit: '', followed: null, lesson: '', reasons: [], missed: false, review: {}, images: [], created: Date.now(),
   };
+  if (!has(d.unfolded) && (d.log || []).some(x => has(x.text))) {   // an older day logged step by step: start the paragraph from its steps
+    d.unfolded = d.log.filter(x => has(x.text)).map(x => [x.t, LOG_KIND[x.kind], LOG_HAS_DIR(x.kind) && BIAS[x.dir] ? BIAS[x.dir] : ''].filter(Boolean).join(' ') + ': ' + x.text).join('\n');
+  }
   d.smt = d.smt || []; d.took = d.took || []; d.log = d.log || []; d.trades = d.trades || []; d.reasons = d.reasons || []; d.review = d.review || {}; d.images = d.images || [];
   d.trades.forEach(t => { t.exits = t.exits || []; t.mistakes = t.mistakes || []; t.broke = t.broke || []; t.review = t.review || {}; });
   const imgs = (await Promise.all(d.images.map(i => DB.get('images', i)))).filter(Boolean);
@@ -1197,9 +1203,8 @@ async function viewForm(id) {
       </section>
 
       <section class="card fs">
-        <div class="sec-h"><div><h2>How the day unfolded</h2><p class="sec-sub">One line per change of mind or action, with its time (ET), in the order it happened. The last read before an entry is the read in force for that trade. A read that got invalidated stays where it is; add the new one under it.</p></div></div>
-        <div class="lines" id="log"></div>
-        <button type="button" class="btn small" id="log-add">Add a step</button>
+        <div class="sec-h"><div><h2>How the day unfolded</h2><p class="sec-sub">Write it as one paragraph: what you saw, what changed your mind and when, what you did, and the read you ended the day with.</p></div></div>
+        <textarea id="unfolded" rows="7" data-f="unfolded" placeholder="e.g. Asia held the low, London swept it and the read stayed bullish. At 9:30 NQ failed to break the high, I flipped bearish and took the short at 9:47 after the 5m close through the up-close candles…">${esc(d.unfolded || '')}</textarea>
       </section>
 
       <section class="card fs">
@@ -1207,6 +1212,7 @@ async function viewForm(id) {
         <div class="trades" id="trades"></div>
         <div class="t-actions">
           <button type="button" class="btn" id="trade-add">+ Add a trade</button>
+          <button type="button" class="btn primary" id="mt5-pull" title="Reads this trading day from MetaTrader 5 through the local bridge: 18:00 ET the evening before to 16:00 ET">Pull from MT5</button>
           <label class="mt5-drop" id="mt5-drop" tabindex="0"><b>Fill from MT5</b><span>drop a screenshot of the trade rows or the HTML report · only this day’s positions are taken</span>
             <input type="file" id="mt5-file" accept=".html,.htm,text/html,image/*" hidden></label>
         </div>
@@ -1291,6 +1297,7 @@ async function viewForm(id) {
       </div>
       <div class="fld"><span>Did I follow my rules on this trade? <span class="muted">Valid = yes</span></span>${tseg('followed', [['yes', 'Yes · valid'], ['no', 'No · invalid']], t.followed === true ? 'yes' : t.followed === false ? 'no' : '', 'pn')}</div>
       <div data-broke ${t.followed === false ? '' : 'hidden'}><p class="sub-h">Which rule broke</p>${tchips('broke', RULE_BREAKS, t.broke || [], 'bad')}</div>
+      <div class="fld"><span>Read in force when I entered</span>${tseg('readDir', [['', 'Same as 9:30'], ['bull', 'Bullish'], ['bear', 'Bearish'], ['none', 'Neutral']], t.readDir || '')}<span class="hint">Only change it if your read flipped during the day.</span></div>
       <div class="fld"><span>Did I trade the pair that led the move?</span>${tseg('ledPair', [['yes', 'Yes'], ['no', 'No']], t.ledPair || '')}<span class="hint">Manipulation: the pair that failed to take the level leads. Breakout: the pair that took it and kept going.</span></div>
       <div class="fld"><span>Stop loss</span>${tseg('stopMgmt', Object.entries(STOP_MGMT), t.stopMgmt || '')}</div>
       <div><p class="sub-h">Exits <span class="muted">· only if you took partials</span></p>
@@ -1385,42 +1392,72 @@ async function viewForm(id) {
   });
 
   // ── MT5: a report or a screenshot fills this day's trades; hand-typed trades are updated, not duplicated
+  // trades from MT5 (a report, a screenshot or the bridge) merged into this session: hand-typed trades are updated, not duplicated.
+  // A trade made of several positions opened at the same moment carries their ids joined with '+'; halves imported
+  // one by one before are folded into it.
+  const mergeMt5 = (trades, note) => {
+    const msg = $('#mt5-msg');
+    const elsewhere = new Set(S.sessions.filter(x => x.id !== d.id).flatMap(x => (x.trades || []).flatMap(t => String(t.mt5 || '').split('+')).filter(Boolean)));
+    let added = 0, updated = 0, open = 0;
+    for (const m of trades) {
+      const parts = String(m.mt5 || '').split('+').filter(Boolean);
+      if (parts.length && parts.every(x => elsewhere.has(x))) continue;
+      const { date, comment, finalStop, closedBy, open: isOpen, parts: _n, ...fields } = m;
+      if (isOpen) open++;
+      const ppl = instrPPL(fields.instrument), e = num(fields.entry), sl = num(fields.stop), z = num(fields.size);
+      if (!has(fields.riskUsd) && ppl && e != null && sl != null && z) fields.riskUsd = +(Math.abs(e - sl) * z * ppl).toFixed(2);
+      fields.mistakes = fields.mistakes || []; fields.exits = fields.exits || [];
+      const tol = Math.max(0.3, fields.entry * 0.0001);
+      const mine = d.trades.filter(x => (x.mt5 && String(x.mt5).split('+').some(y => parts.includes(y)))
+        || (!x.mt5 && x.instrument === fields.instrument && x.dir === fields.dir && (num(x.entry) == null || Math.abs(num(x.entry) - fields.entry) <= tol)));
+      const same = mine[0];
+      if (mine.length > 1) d.trades = d.trades.filter(x => x === same || !mine.includes(x));   // halves of one trade: one review
+      if (same) {   // keep what was typed by hand (read, mistakes, review); MT5 is right about the numbers
+        for (const k of ['mt5', 'time', 'instrument', 'dir', 'entry', 'stop', 'size', 'riskUsd']) if (has(fields[k])) same[k] = fields[k];
+        same.pnl = has(fields.pnl) ? fields.pnl : (same.mt5 ? '' : same.pnl);
+        if (has(fields.exit) || fields.exits.length) { same.exit = fields.exit; same.exits = fields.exits; }
+        if (!has(same.target) && has(fields.target)) same.target = fields.target;
+        if (!same.stopMgmt && fields.stopMgmt) same.stopMgmt = fields.stopMgmt;
+        if (fields.stopMgmt === 'widened' && !same.mistakes.includes(MISTAKES[0])) same.mistakes.push(MISTAKES[0]);
+        updated++;
+      } else {
+        d.trades.push({ ...newTrade(), ...fields, mistakes: [...fields.mistakes], review: {} });
+        added++;
+      }
+    }
+    d.trades.sort((a, b) => (sessMin(a.time) ?? -1) - (sessMin(b.time) ?? -1));
+    renderTrades();
+    msg.textContent = [added ? `${plural(added, 'trade')} added` : '', updated ? `${plural(updated, 'trade')} updated` : '',
+      open ? `${open} still open: pull again once it is closed` : '', !added && !updated && !note ? 'Nothing new for this day.' : '', note].filter(Boolean).join(' · ');
+  };
   const fillFromMt5 = async file => {
     const msg = $('#mt5-msg');
     msg.textContent = /^image\//.test(file.type) ? 'Reading the screenshot… (the first time takes a few seconds)' : 'Reading the report…';
     try {
-      const { trades, note, snap } = await mt5TradesFor(file, d.date);
-      const elsewhere = new Set(S.sessions.filter(x => x.id !== d.id).flatMap(x => (x.trades || []).map(t => t.mt5).filter(Boolean)));
-      let added = 0, updated = 0, open = 0;
-      for (const m of trades) {
-        if (m.mt5 && elsewhere.has(m.mt5)) continue;
-        const { date, comment, finalStop, closedBy, open: isOpen, ...fields } = m;
-        if (isOpen) open++;
-        const tol = Math.max(0.3, fields.entry * 0.0001);
-        const same = d.trades.find(x => (m.mt5 && x.mt5 === m.mt5) || (!x.mt5 && x.instrument === fields.instrument && x.dir === fields.dir
-          && (num(x.entry) == null || Math.abs(num(x.entry) - fields.entry) <= tol)));
-        if (same) {   // keep what was typed by hand (read, mistakes, review); MT5 is right about the numbers
-          for (const k of ['mt5', 'time', 'instrument', 'dir', 'entry', 'stop', 'size', 'riskUsd']) if (has(fields[k])) same[k] = fields[k];
-          if (has(fields.pnl)) same.pnl = fields.pnl;
-          if (has(fields.exit) || fields.exits.length) { same.exit = fields.exit; same.exits = fields.exits; }
-          if (!has(same.target) && has(fields.target)) same.target = fields.target;
-          if (!same.stopMgmt && fields.stopMgmt) same.stopMgmt = fields.stopMgmt;
-          if (fields.stopMgmt === 'widened' && !same.mistakes.includes(MISTAKES[0])) same.mistakes.push(MISTAKES[0]);
-          updated++;
-        } else {
-          d.trades.push({ ...newTrade(), ...fields, mistakes: [...fields.mistakes], review: {} });
-          added++;
-        }
-      }
-      d.trades.sort((a, b) => (a.time || '').localeCompare(b.time || ''));
-      renderTrades();
-      msg.textContent = [added ? `${plural(added, 'trade')} added` : '', updated ? `${plural(updated, 'trade')} updated` : '',
-        open ? `${open} still open in the screenshot: add the P&L once closed` : '', !added && !updated && !note ? 'Nothing new for this day.' : '', note].filter(Boolean).join(' · ');
+      const { trades, note } = await mt5TradesFor(file, d.date);
+      mergeMt5(trades, note);
     } catch (err) {
       console.error(err);
       msg.textContent = 'Could not read it: ' + err.message;
     }
   };
+  // the local read-only bridge (mt5-bridge/start.command) returns the trading day that ends on this date at 16:00 ET
+  $('#mt5-pull').addEventListener('click', async () => {
+    const msg = $('#mt5-msg'), btn = $('#mt5-pull');
+    btn.disabled = true; msg.textContent = 'Asking MetaTrader 5…';
+    try {
+      const r = await fetch(`http://127.0.0.1:8765/trades?date=${encodeURIComponent(d.date)}`, { signal: AbortSignal.timeout(180000) });
+      const j = await r.json();
+      if (!r.ok) throw new Error(j.error || 'bridge error ' + r.status);
+      const prev = isoDay(new Date(Date.parse(d.date + 'T12:00:00') - 864e5));
+      mergeMt5(j.trades, j.trades.length ? '' : `No position opened between 18:00 ET on ${fmtDate(prev)} and 16:00 ET on ${fmtDate(d.date)}.`);
+    } catch (err) {
+      console.error(err);
+      msg.textContent = err.name === 'TypeError' || err.name === 'TimeoutError'
+        ? 'Can’t reach the MT5 bridge. Double-click mt5-bridge/start.command (MetaTrader 5 open and logged in), then try again.'
+        : 'MT5: ' + err.message;
+    } finally { btn.disabled = false; }
+  });
   $('#mt5-file').addEventListener('change', e => { if (e.target.files[0]) fillFromMt5(e.target.files[0]); e.target.value = ''; });
   const mdrop = $('#mt5-drop');
   ['dragenter', 'dragover'].forEach(ev => mdrop.addEventListener(ev, e => { e.preventDefault(); e.stopPropagation(); mdrop.classList.add('over'); }));
@@ -1433,34 +1470,6 @@ async function viewForm(id) {
     $('#nt-review').innerHTML = `<div class="q-list">${Q[ntKey()].map((q, k) => `<label>${esc(q)}<textarea rows="2" data-ntq="${k}">${esc(d.review[q] || '')}</textarea></label>`).join('')}</div>`;
   };
   $('#nt-review').addEventListener('input', e => { const k = e.target.dataset.ntq; if (k != null) d.review[Q[ntKey()][+k]] = e.target.value; });
-
-  // the day's timeline: reads, invalidations, entries, management
-  const renderLog = () => {
-    $('#log').innerHTML = d.log.map((x, i) => `<div class="line log" data-i="${i}">
-      <select data-l="kind" aria-label="Kind of step">${Object.entries(LOG_KIND).map(([k, l]) => `<option value="${k}" ${k === x.kind ? 'selected' : ''}>${l}</option>`).join('')}</select>
-      <select data-l="dir" aria-label="Direction of the read" ${LOG_HAS_DIR(x.kind) ? '' : 'disabled'}><option value="">Direction</option>${Object.entries(BIAS).map(([k, l]) => `<option value="${k}" ${LOG_HAS_DIR(x.kind) && k === x.dir ? 'selected' : ''}>${l}</option>`).join('')}</select>
-      <input type="time" data-l="t" value="${esc(x.t || '')}" aria-label="Time of this step (ET)" title="Time of this step (ET)">
-      <input type="text" data-l="text" value="${esc(x.text || '')}" placeholder="${x.kind === 'inval' ? 'What invalidated it' : LOG_HAS_DIR(x.kind) ? 'What you saw, and why' : 'What you did'}" aria-label="Description">
-      <button type="button" class="icon-btn" data-rm-line aria-label="Remove this step">×</button></div>`).join('');
-  };
-  $('#log-add').addEventListener('click', () => {
-    const NEXT = { read: 'inval', inval: 'flip', flip: 'entry', entry: 'manage', manage: 'exit', exit: 'note', note: 'note' };
-    const last = d.log[d.log.length - 1];
-    d.log.push(last ? { kind: NEXT[last.kind], dir: '', t: '', text: '' } : { kind: 'read', dir: d.bias || '', t: '', text: '' });
-    renderLog();
-    $('#log .line:last-child [data-l="text"]').focus();
-  });
-  $('#log').addEventListener('input', e => {
-    const row = e.target.closest('.line'), k = e.target.dataset.l;
-    if (!row || !k) return;
-    d.log[+row.dataset.i][k] = e.target.value;
-    if (k === 'kind') renderLog();
-  });
-  $('#log').addEventListener('click', e => {
-    if (!e.target.closest('[data-rm-line]')) return;
-    d.log.splice(+e.target.closest('.line').dataset.i, 1);
-    renderLog();
-  });
 
   const renderThumbs = () => {
     $('#thumbs').innerHTML = form.imgs.map((im, i) => `<figure class="thumb"><img src="${im.url}" alt="${esc(im.label)}">
@@ -1539,7 +1548,6 @@ async function viewForm(id) {
   onLeave(() => document.removeEventListener('keydown', onKey));
 
   renderThumbs();
-  renderLog();
   renderNtReview();
   renderTrades();
 }
@@ -1827,7 +1835,7 @@ async function exportJSON() {
 }
 
 function exportCSV() {
-  const cols = ['date', 'time', 'kind', 'acct', 'instrument', 'dir', 'entryTf', 'prevType', 'prevSide', 'bias', 'profile', 'smt', 'inval', 'draw', 'actual', 'biasOk', 'drawHit', 'failSign', 'failTime', 'lesson', 'entry', 'stop', 'target', 'exit', 'stopMgmt', 'exits', 'log', 'size', 'riskUsd', 'R', 'roomR', 'pnlUsd', 'followed', 'mistakes', 'reasons', 'missed', 'notes'];
+  const cols = ['date', 'time', 'kind', 'acct', 'instrument', 'dir', 'entryTf', 'prevType', 'prevSide', 'bias', 'profile', 'smt', 'inval', 'draw', 'actual', 'biasOk', 'drawHit', 'failSign', 'failTime', 'lesson', 'entry', 'stop', 'target', 'exit', 'stopMgmt', 'exits', 'unfolded', 'log', 'size', 'riskUsd', 'R', 'roomR', 'pnlUsd', 'followed', 'mistakes', 'reasons', 'missed', 'notes'];
   const q = v => { const s = v == null ? '' : String(v); return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
   const rows = [...S.trades].sort(byTime).map(t => cols.map(c => {
     if (c === 'R') { const r = tradeR(t); return r == null ? '' : r.toFixed(3); }
@@ -1838,6 +1846,7 @@ function exportCSV() {
     if (c === 'exit') return shownExit(t);
     if (c === 'stopMgmt') return STOP_MGMT[t.stopMgmt] || '';
     if (c === 'exits') return exitRows(t).map(x => `${x.pct}% @ ${x.price}${x.why ? ' (' + x.why + ')' : ''}`).join('; ');
+    if (c === 'unfolded') return t.unfolded || '';
     if (c === 'log') return (t.log || []).map(x => [LOG_KIND[x.kind], LOG_HAS_DIR(x.kind) ? BIAS[x.dir] : '', x.text].filter(Boolean).join(' · ')).join(' | ');
     return t[c];
   }).map(q).join(','));

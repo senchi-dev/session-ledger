@@ -529,3 +529,6 @@ q.lesson, .lessons q { quotes: "“" "”"; font-style: italic; color: var(--ink
 .ftmo-form-a { grid-column: 1 / -1; display: flex; gap: 8px; }
 .ftmo-form p { grid-column: 1 / -1; margin: 0; }
 @media (max-width: 760px) { .ftmo-form { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+
+.unfolded { margin: 0; white-space: pre-wrap; line-height: 1.6; }
+#unfolded { min-height: 150px; }
