@@ -532,3 +532,8 @@ q.lesson, .lessons q { quotes: "“" "”"; font-style: italic; color: var(--ink
 
 .unfolded { margin: 0; white-space: pre-wrap; line-height: 1.6; }
 #unfolded { min-height: 150px; }
+
+.dont-list { list-style: none; margin: 0 0 14px; padding: 0; display: grid; gap: 6px; }
+.dont-list li { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 10px 12px; border: 1px solid var(--rule); border-radius: 10px; color: var(--ink); }
+.dont-list li.muted { border-style: dashed; color: var(--muted); }
+.dont-del { flex: none; }

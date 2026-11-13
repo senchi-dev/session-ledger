@@ -71,7 +71,7 @@ const CHECKS = [
 ];
 const MISTAKES = ['Moved stop away', 'Ignored exit rule', 'Entered early', 'Chased', 'Oversized', 'Revenge trade', 'Traded into news', 'Outside my window', 'No stop loss', 'FOMO'];
 const NOTRADE_REASONS = ['No bias', 'High-impact news', '9:30 didn’t deliver', 'Profile invalid', 'Setup came too late', 'Pairs disagreed', 'No room for 2R', 'Other'];
-const IMG_LABELS = ['Daily framework / Bias', '7H profiles', 'Structure · 4H', 'Structure · 1H', 'Structure · 30m', 'Structure · 15m', 'Structure · 5m', 'Entry'];
+const IMG_LABELS = ['Daily framework / Bias', '7H profiles', 'Structure · 4H', 'Structure · 1H', 'Structure · 30m', 'Structure · 15m', 'Structure · 5m', 'Structure · 4m', 'Structure · 3m', 'Entry'];
 const IMG_OLD = { 'HTF / daily': 'Daily framework / Bias', 'Setup / profile': '7H profiles', 'Structure': 'Structure · 1H' };
 const imgLabel = l => IMG_OLD[l] || l;
 const IMG_DEFAULT = ['Daily framework / Bias', '7H profiles', 'Structure · 1H'];
@@ -1673,6 +1673,13 @@ function viewPlaybook() {
     <a class="btn" href="#new">Start today’s entry</a>
   </header>
   <section class="pb-tf" aria-label="Timeframes">${PB_TF.map(([t, j]) => `<div><span class="mono">${t}</span><span class="muted">${j}</span></div>`).join('<span class="pb-arrow" aria-hidden="true">→</span>')}</section>
+  <section class="row one">
+    <article class="card pb-donts">
+      <div class="card-h"><h2>Never do</h2><span class="muted small">my own strict list · not part of the recaps or the logs</span></div>
+      <ul class="dont-list">${(S.settings.donts || []).map(d => `<li><span>${esc(d.text)}</span><button type="button" class="icon-btn dont-del" data-id="${esc(d.id)}" aria-label="Remove" title="Remove">✕</button></li>`).join('') || '<li class="muted">Nothing yet. Add the things you must be strict about not doing.</li>'}</ul>
+      <div class="ver-add"><input class="search" id="dont-text" placeholder="Never…" aria-label="New rule"><button type="button" class="btn" id="dont-go" disabled>Add</button></div>
+    </article>
+  </section>
   <section class="pb">
     ${PLAYBOOK.map(s => `<article class="card pb-step">
       <div class="pb-h"><span class="pb-n mono">${s.n}</span><div><p class="pb-when">${s.when}</p><h2>${s.title}</h2></div></div>
@@ -1692,6 +1699,19 @@ function viewPlaybook() {
       <div class="ver-add"><input class="search" id="ver-text" placeholder="The rule, in one sentence" aria-label="Rule change"><input type="date" class="sel" id="ver-from" value="${nextDay(today())}" aria-label="Starts on"><label class="small muted" style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="ver-new"> starts a new version</label><button type="button" class="btn" id="ver-go" disabled>Record</button></div>
     </article>
   </section>`;
+  const dt = $('#dont-text'), dg = $('#dont-go');
+  const addDont = async () => {
+    if (!has(dt.value)) return;
+    S.settings.donts = [...(S.settings.donts || []), { id: uid(), text: dt.value.trim() }];
+    await saveSettings(); viewPlaybook();
+  };
+  dt.addEventListener('input', () => { dg.disabled = !has(dt.value); });
+  dt.addEventListener('keydown', e => { if (e.key === 'Enter') addDont(); });
+  dg.addEventListener('click', addDont);
+  $$('.dont-del').forEach(b => b.addEventListener('click', async () => {
+    S.settings.donts = (S.settings.donts || []).filter(d => d.id !== b.dataset.id);
+    await saveSettings(); viewPlaybook();
+  }));
   const vt = $('#ver-text'), vg = $('#ver-go');
   vt.addEventListener('input', () => { vg.disabled = !has(vt.value); });
   vg.addEventListener('click', async () => {

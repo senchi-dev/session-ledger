@@ -12,6 +12,8 @@ A trading day runs from the 18:00 ET candle of the evening before to the 16:00 E
 Positions opened at the same moment (the EA splits one trade into two sizes) come back as one trade.
 """
 import json
+import os
+import signal
 import sys
 import threading
 import time
@@ -27,16 +29,31 @@ ALLOWED_ORIGINS = {'https://senchi-dev.github.io', 'http://127.0.0.1:8812', 'htt
 ALLOWED_HOSTS = {f'127.0.0.1:{PORT}', f'localhost:{PORT}'}
 SERVER_TO_ET_H = 7            # FTMO server time runs 7 hours ahead of New York, all year
 SAME_MOMENT_S = 2             # positions opened within 2 seconds of each other are one trade
+MT5_TIMEOUT_S = 25            # MT5 never takes this long unless the bridge is talking to a dead MT5 session
 LOCK = threading.Lock()
 _ready = False
+_term_pid = None              # the MT5 terminal process the current connection belongs to
+
+
+def terminal_pid():
+    """PID of the running MT5 terminal (Wine process), or None when MT5 is closed."""
+    for line in os.popen('pgrep -f "Program Files.MetaTrader 5.terminal64.exe"'):
+        try:
+            return int(line)
+        except ValueError:
+            pass
+    return None
 
 
 def ensure_mt5():
-    global _ready
+    global _ready, _term_pid
     if not _ready:
-        if not mt5.initialize():
+        _term_pid = terminal_pid()
+        if _term_pid is None or not mt5.initialize():
             raise RuntimeError('MetaTrader 5 is not reachable: open the app and log in to your account')
         _ready = True
+    if mt5.account_info() is None:       # connected to a terminal that is not logged in (or a dead one): never return an empty day
+        raise RuntimeError('MetaTrader 5 is not logged in to your account')
 
 
 def raw(action, key, lo, hi):
@@ -168,14 +185,54 @@ def trade_of(group):
     }
 
 
-def trades_for(day):
-    with LOCK:
+class MT5Stuck(RuntimeError):
+    pass
+
+
+def restart_self():
+    """MT5 was restarted under a running bridge and the old session never answers again: start over clean."""
+    time.sleep(1)                                    # let the error reply go out first
+    for line in os.popen(f'pgrep -P {os.getpid()}'):  # the Wine agent is our child
+        try:
+            os.kill(int(line), signal.SIGKILL)
+        except (ValueError, OSError):
+            pass
+    os.execv(sys.executable, [sys.executable] + sys.argv)
+
+
+def watch_terminal():
+    """A bridge left running across an MT5 restart keeps talking to the dead session and answers with empty days."""
+    while True:
+        time.sleep(5)
+        if _ready and terminal_pid() != _term_pid:
+            restart_self()
+
+
+def fetch_mt5(day, out):
+    try:
         ensure_mt5()
         lo, hi = trading_day_window(day)
         # fetch a little wider, then cut on the exact opening time
         deals = raw('history_deals', 'deals', lo - 6 * 3600, hi + 6 * 3600)
         orders = {o.ticket: o for o in raw('history_orders', 'orders', lo - 6 * 3600, hi + 6 * 3600)}
         still_open = {p.ticket for p in (mt5.positions_get() or [])}
+        out['res'] = (lo, hi, deals, orders, still_open)
+    except Exception as e:
+        out['err'] = e
+
+
+def trades_for(day):
+    out = {}
+    with LOCK:
+        t = threading.Thread(target=fetch_mt5, args=(day, out), daemon=True)
+        t.start()
+        t.join(MT5_TIMEOUT_S)
+        if t.is_alive():
+            threading.Thread(target=restart_self, daemon=True).start()
+            raise MT5Stuck('MetaTrader 5 did not answer (it was probably restarted). The bridge is restarting itself: try again in a few seconds')
+    if 'err' in out:
+        raise out['err']
+    lo, hi, deals, orders, still_open = out['res']
     in_window = lambda p: lo <= p['at'] < hi
     positions = [p for p in positions_of(deals, orders, still_open) if in_window(p)]
     return [trade_of(g) for g in merge_same_moment(positions)]
@@ -236,6 +293,7 @@ class Handler(BaseHTTPRequestHandler):
 
 if __name__ == '__main__':
     srv = ThreadingHTTPServer(('127.0.0.1', PORT), Handler)
+    threading.Thread(target=watch_terminal, daemon=True).start()
     print(f'MT5 bridge on http://127.0.0.1:{PORT} (read-only). Keep this window open; Ctrl+C stops it.', flush=True)
     try:
         srv.serve_forever()
