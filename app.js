@@ -952,7 +952,8 @@ function debounce(fn, ms) { let t; return (...a) => { clearTimeout(t); t = setTi
 
 // ───────────────────────── trades list ─────────────────────────
 function viewTrades() {
-  const q = Object.assign({ text: '', out: 'all', day: '' }, prefs.get('tq', {}));
+  const q = Object.assign({ text: '', out: 'all', day: '', prof: '', shots: false }, prefs.get('tq', {}));
+  const mode = prefs.get('tview', 'list') === 'gallery' ? 'gallery' : 'list';
   let list = filtered();
   if (q.day) list = list.filter(t => t.date === q.day);
   if (q.out !== 'all') list = list.filter(t => q.out === 'notrade' ? t.kind === 'notrade' : t.kind === 'trade' && outcome(tradeR(t)) === q.out);
@@ -962,18 +963,28 @@ function viewTrades() {
       .join(' ').toLowerCase().includes(s));
   }
   list = [...list].sort((a, b) => byTime(b, a));
+  const profs = mode === 'gallery' ? PROFILE_ORDER.filter(k => list.some(t => t.profile === k)) : [];
+  if (mode === 'gallery') {   // quick chips: only in the gallery, on fields entries already have
+    if (q.prof && profs.includes(q.prof)) list = list.filter(t => t.profile === q.prof);
+    if (q.shots) list = list.filter(t => (t.images || []).length);
+  }
+  const quick = mode === 'gallery' ? `<div class="chips g-chips" role="group" aria-label="Quick filters">
+    <button type="button" class="chip" data-q="prof" data-v="" aria-pressed="${!q.prof || !profs.includes(q.prof)}">Any profile</button>
+    ${profs.map(k => `<button type="button" class="chip" data-q="prof" data-v="${esc(k)}" aria-pressed="${q.prof === k}">${esc(profLabel(k))}</button>`).join('')}
+    <button type="button" class="chip" data-q="shots" aria-pressed="${!!q.shots}">With screenshots</button></div>` : '';
 
   app.innerHTML = `
   ${sampleBanner()}
   <header class="page-head">
     <div><h1>Trades</h1><p class="sub">${list.length} entr${list.length === 1 ? 'y' : 'ies'}${q.day ? ` on ${fmtDate(q.day)} <button type="button" class="chip-x" id="clear-day">clear day</button>` : ''}</p></div>
-    <div class="filters">${filterBar()}<a class="btn" href="#import">Import from MT5</a></div>
+    <div class="filters">${filterBar()}<div class="seg" role="group" aria-label="Layout">${[['list', 'List'], ['gallery', 'Gallery']].map(([v, l]) => `<button type="button" data-tview="${v}" aria-pressed="${mode === v}">${l}</button>`).join('')}</div><a class="btn" href="#import">Import from MT5</a></div>
   </header>
   <div class="toolbar">
     <input class="search" type="search" id="tq" placeholder="Search notes, tags, instrument, review answers…" value="${esc(q.text)}" aria-label="Search entries">
     ${seg('out', [['all', 'All'], ['win', 'Wins'], ['loss', 'Losses'], ['be', 'Breakeven'], ['notrade', 'No-trade']], q.out)}
   </div>
-  ${list.length ? tradeTable(list) : `<div class="card"><p class="empty" style="margin:0 0 12px">No entries match these filters.</p><a class="btn" href="#new">Log an entry</a></div>`}`;
+  ${quick}
+  ${list.length ? (mode === 'gallery' ? tradeGallery(list) : tradeTable(list)) : `<div class="card"><p class="empty" style="margin:0 0 12px">No entries match these filters.</p><a class="btn" href="#new">Log an entry</a></div>`}`;
 
   bindFilters(viewTrades);
   bindSampleBanner(viewTrades);
@@ -983,6 +994,9 @@ function viewTrades() {
   $$('.toolbar [data-seg="out"] button').forEach(b => b.addEventListener('click', () => { save({ out: b.dataset.v }); viewTrades(); }));
   const cd = $('#clear-day');
   if (cd) cd.addEventListener('click', () => { save({ day: '' }); viewTrades(); });
+  $$('[data-tview]').forEach(b => b.addEventListener('click', () => { if (b.dataset.tview !== mode) { prefs.set('tview', b.dataset.tview); viewTrades(); } }));
+  $$('.g-chips [data-q]').forEach(b => b.addEventListener('click', () => { save(b.dataset.q === 'prof' ? { prof: b.dataset.v } : { shots: !q.shots }); viewTrades(); }));
+  if (mode === 'gallery') bindGallery();
   $$('.tt tbody tr').forEach(tr => {
     tr.addEventListener('click', () => { location.hash = '#trade/' + tr.dataset.id; });
     tr.addEventListener('keydown', e => { if (e.key === 'Enter') location.hash = '#trade/' + tr.dataset.id; });
@@ -1018,6 +1032,64 @@ function tradeTable(list) {
     <td class="r mono ${cls(p)}">${fmtUsd(p)}</td>
     <td class="r mono res ${cls(r)}">${r == null ? '<span class="muted">open</span>' : fmtR(r)}</td></tr>`;
   }).join('')}</tbody></table></div>`;
+}
+
+// ── gallery: one card per entry, best screenshot loaded only when the card nears the viewport
+// GAL caches per session for the life of the Trades view, so filters and search re-use the same blob URLs;
+// route() clears this cache and revokes every URL (releaseUrls) when the view is left.
+const GAL = { cache: new Map(), io: null };
+const galReset = () => { if (GAL.io) GAL.io.disconnect(); GAL.io = null; GAL.cache.clear(); };
+function galShots(sid) {   // -> Promise<[{ url, label }]> in category order, blob URLs created once per session
+  if (!GAL.cache.has(sid)) {
+    const s = findSession(sid);
+    GAL.cache.set(sid, Promise.all(((s && s.images) || []).map(i => DB.get('images', i)))
+      .then(imgs => sortImgs(imgs.filter(Boolean)).map(i => ({ url: trackUrl(i.blob), label: imgLabel(i.label) })))
+      .catch(() => []));
+  }
+  return GAL.cache.get(sid);
+}
+const bestShot = shots => { const e = shots.map(x => x.label).lastIndexOf('Entry'); return e >= 0 ? e : shots.length - 1; };
+function tradeGallery(list) {
+  return `<ul class="gal" aria-label="Entries">${list.map(t => {
+    const nt = t.kind === 'notrade', r = nt ? null : tradeR(t), o = nt ? 'notrade' : outcome(r), n = (t.images || []).length;
+    const tags = [tag(ACCTS[t.acct] || '—'), t.profile ? tag(profLabel(t.profile)) : '',
+      nt ? (t.missed ? tag('missed trade', 'bad') : tag('good pass', 'good')) : t.followed === true ? tag('valid', 'good') : t.followed === false ? tag('invalid', 'bad') : ''].join('');
+    const what = nt ? 'No-trade day' : `${esc(t.instrument || '—')} · <span class="side ${t.dir === 'short' ? 'short' : 'long'}">${t.dir === 'short' ? 'Short' : 'Long'}</span>`;
+    const res = nt ? 'pass' : r == null ? 'open' : fmtR(r);
+    return `<li class="g-item">
+      <a class="g-card" href="#trade/${t.id}" aria-label="${esc(`${fmtDate(t.date)} · ${nt ? 'No-trade day' : (t.instrument || '') + ' ' + (t.dir === 'short' ? 'short' : 'long')} · ${res}`)}">
+        <span class="g-media${n ? ' loading' : ''}"${n ? ` data-sid="${t.id}"` : ''}>${n ? '' : '<span class="g-ph">No screenshot</span>'}</span>
+        <span class="g-meta">
+          <span class="g-date mono">${dot(o)}${fmtDate(t.date)} <span class="muted">${weekday(t.date)}${t.time ? ' ' + esc(t.time) : ''}</span></span>
+          <span class="g-line"><span class="g-what">${what}</span><span class="g-r mono ${nt || r == null ? 'muted' : cls(r)}">${res}</span></span>
+          <span class="g-tags">${tags}</span>
+        </span>
+      </a>
+      ${n ? `<button type="button" class="g-zoom" data-zoom-sid="${t.id}" aria-label="View screenshots full screen" title="View screenshots" hidden><svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><path d="M9.5 2.5h4v4M6.5 13.5h-4v-4M13.5 2.5 9 7M2.5 13.5 7 9" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></button>` : ''}
+    </li>`;
+  }).join('')}</ul>`;
+}
+function bindGallery() {
+  if (GAL.io) GAL.io.disconnect();
+  const load = async el => {
+    const shots = await galShots(el.dataset.sid);
+    if (!el.isConnected) return;   // the grid re-rendered meanwhile; the cached URL is reused there
+    el.classList.remove('loading');
+    if (!shots.length) { el.innerHTML = '<span class="g-ph">No screenshot</span>'; return; }
+    const b = shots[bestShot(shots)];
+    el.innerHTML = `<img src="${b.url}" alt="${esc(b.label)}" loading="lazy" decoding="async">`;
+    const z = el.closest('.g-item').querySelector('.g-zoom');
+    if (z) z.hidden = false;
+  };
+  const media = $$('.gal .g-media[data-sid]');
+  if ('IntersectionObserver' in window) {
+    GAL.io = new IntersectionObserver((es, obs) => es.forEach(e => { if (e.isIntersecting) { obs.unobserve(e.target); load(e.target); } }), { rootMargin: '400px 0px' });
+    media.forEach(el => GAL.io.observe(el));
+  } else media.forEach(load);
+  $$('.gal .g-zoom').forEach(b => b.addEventListener('click', async () => {
+    const shots = await galShots(b.dataset.zoomSid);
+    if (shots.length) openLightbox(shots, bestShot(shots), b);
+  }));
 }
 
 // ───────────────────────── detail ─────────────────────────
@@ -2036,6 +2108,7 @@ $('#theme').addEventListener('click', () => {
 // ───────────────────────── router ─────────────────────────
 async function route() {
   cleanup.forEach(fn => fn()); cleanup = [];
+  galReset();
   releaseUrls();
   closeLightbox();
   const [view, id] = (location.hash.replace(/^#\/?/, '') || 'dashboard').split('/');
