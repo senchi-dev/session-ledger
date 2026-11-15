@@ -582,11 +582,13 @@ function countUp(root) {
   if (reducedMotion()) return;
   const re = /\d[\d,]*(?:\.\d+)?/g;
   const targets = [];
-  $$('[data-count]', root).forEach(el => {
+  $$('[data-count]', root).filter(el => root !== app || !el.closest('.reveal')).forEach(el => {   // blocks that reveal on scroll count when they appear
     const w = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
     for (let n = w.nextNode(); n; n = w.nextNode()) if (re.test(n.data)) { re.lastIndex = 0; targets.push([n, n.data]); }
   });
   if (!targets.length) return;
+  const held = [...new Set(targets.map(([n]) => n.parentElement))].filter(Boolean);
+  held.forEach(el => { el.style.minWidth = el.getBoundingClientRect().width + 'px'; });
   const fmt = (m, e) => {
     const dec = (m.split('.')[1] || '').length, v = parseFloat(m.replace(/,/g, '')) * e;
     return m.includes(',') ? v.toLocaleString('en-US', { minimumFractionDigits: dec, maximumFractionDigits: dec }) : v.toFixed(dec);
@@ -596,6 +598,7 @@ function countUp(root) {
     const p = Math.min(1, (now - t0) / dur), e = 1 - Math.pow(1 - p, 3);   // ease-out cubic, no overshoot
     targets.forEach(([n, orig]) => { n.data = p === 1 ? orig : orig.replace(re, m => fmt(m, e)); });
     if (p < 1) requestAnimationFrame(step);
+    else held.forEach(el => { el.style.minWidth = ''; });
   };
   targets.forEach(([n, orig]) => { n.data = orig.replace(re, m => fmt(m, 0)); });
   requestAnimationFrame(step);
@@ -608,6 +611,26 @@ function enterView() {
   clearTimeout(enterView._t);
   enterView._t = setTimeout(() => app.classList.remove('view-in'), 1200);   // later re-renders (filters, search) stay still
   countUp(app);
+  reveal(app);
+}
+// blocks below the fold fade + rise once as they scroll in (once per view entry)
+let revealIO = null;
+function reveal(root) {
+  if (revealIO) revealIO.disconnect();
+  revealIO = null;
+  const els = $$('.reveal', root);
+  const play = el => { countUp(el); drawIn(el); };
+  if (!('IntersectionObserver' in window)) { els.forEach(play); return; }
+  revealIO = new IntersectionObserver((es, obs) => es.forEach(e => { if (e.isIntersecting) { obs.unobserve(e.target); e.target.classList.add('rv-in'); play(e.target); } }), { rootMargin: '0px 0px -8% 0px' });
+  els.forEach(el => { el.classList.add('rv'); revealIO.observe(el); });
+}
+function drawIn(root) {
+  $$('[data-draw]', root).forEach(p => {
+    if (!p.getTotalLength || !p.animate) return;
+    const L = p.getTotalLength(), dash = `${L} ${L}`;
+    p.animate([{ strokeDasharray: dash, strokeDashoffset: L }, { strokeDasharray: dash, strokeDashoffset: 0 }], { duration: 700, easing: 'cubic-bezier(.22, .61, .36, 1)' });
+  });
+  $$('.chart .dd, .chart .dot, .chart .last-v', root).forEach(x => x.animate && x.animate([{ opacity: 0 }, { opacity: 0, offset: .5 }, { opacity: 1 }], { duration: 900, easing: 'ease-out' }));
 }
 
 function filterBar() {
@@ -660,6 +683,8 @@ function viewDashboard() {
     <div class="filters">${filterBar()}</div>
   </header>
 
+  ${scoreboard(st, list)}
+
   <section class="stats" aria-label="Key statistics">
     <div class="stats-hero">
       ${stat('Net result', fmtR(st.netR), cls(st.netR), st.pnl != null ? `<span class="${cls(st.pnl)}">${fmtUsd(st.pnl)}</span>` : '')}
@@ -676,17 +701,18 @@ function viewDashboard() {
     </div>
   </section>
 
-  <section class="row one">${ftmoCard()}</section>
-
-  <section class="row">
-    <article class="card">
-      <div class="card-h"><h2>Equity curve</h2><span class="muted small mono">cumulative R</span></div>
-      <div class="chart" id="eq"></div>
-    </article>
-    <article class="card">${testCard(st)}</article>
+  <section class="ed-block reveal" aria-labelledby="eq-h">
+    ${edHead('01', 'Equity', 'eq-h', `${plural(st.n, 'trade')}${st.eq.length ? ' · ' + fmtDate(st.eq[0].t.date) + ' – ' + fmtDate(st.eq[st.eq.length - 1].t.date) : ''} · ${scopeLabel()}`)}
+    <div class="eq-top"><div class="eq-big mono ${cls(st.netR)}" data-count>${st.n ? fmtR(st.netR) : '—'}</div><p class="eq-sub">cumulative R${st.maxDD ? ` · <span class="neg">−${st.maxDD.toFixed(2)}R</span> max drawdown` : ''}</p></div>
+    <div class="chart eq-chart" id="eq"></div>
   </section>
 
-  <section class="row">
+  <section class="ed-block reveal" aria-labelledby="hm-h">${heatmap(list)}</section>
+
+  <section class="row one">${ftmoCard()}</section>
+
+  <section class="row three">
+    <article class="card">${testCard(st)}</article>
     <article class="card">${calendar(list, month)}</article>
     <article class="card">${bars('By weekday', groupBy(st.closed, t => weekday(t.date), ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']))}</article>
   </section>
@@ -725,11 +751,13 @@ function viewDashboard() {
     <article class="card">${recent(list)}</article>
   </section>`;
 
+  renderTicker();   // follows the dashboard scope
   bindFtmo();
   bindFilters(viewDashboard);
   bindSampleBanner(viewDashboard);
   drawEquity($('#eq'), st.eq);
   bindCalendar(list);
+  bindHeatmap();
   const onResize = debounce(() => { const el = $('#eq'); if (el) drawEquity(el, st.eq); }, 120);
   window.addEventListener('resize', onResize);
   onLeave(() => window.removeEventListener('resize', onResize));
@@ -779,7 +807,7 @@ function testCard(st) {
   else if (st.exp > 0) { status = 'Positive but below target. Fix one thing, then retest.'; tone = 'warn'; }
   else { status = 'Negative expectancy. Rethink before risking money.'; tone = 'neg'; }
   return `
-    <div class="card-h"><h2>System test</h2><span class="muted small">${F.acct === 'all' ? 'all accounts' : ACCTS[F.acct].toLowerCase()}</span></div>
+    <div class="card-h"><h2>System test</h2><span class="muted small">${scopeLabel()}</span></div>
     <div class="test-big mono">${st.n}<span class="muted">/${T}</span></div>
     <div class="progress" role="progressbar" aria-valuemin="0" aria-valuemax="${T}" aria-valuenow="${st.n}"><span style="width:${(p * 100).toFixed(1)}%"></span></div>
     <dl class="test-dl">
@@ -828,27 +856,59 @@ function lessonsCard(items) {
     <q>${esc(t.lesson)}</q></a></li>`).join('')}</ul>` : '<p class="empty">Lessons you write after each session show up here.</p>'}`;
 }
 
+// scoreboard: one bordered strip, four numbers read off the same scope as the stats
+function scoreboard(st, list) {
+  const days = [...dayAgg(list).entries()].filter(([, a]) => a.n);
+  const won = days.filter(([, a]) => a.r > 0.1).length;
+  const best = days.reduce((b, d) => (!b || d[1].r > b[1].r ? d : b), null);
+  const cell = (k, v, c, sub) => `<div class="sb-c"><div class="k">${esc(k)}</div><div class="v ${c}" data-count>${v}</div><div class="s">${sub}</div></div>`;
+  return `<section class="sb" aria-label="Scoreboard">
+    ${cell('Trades', String(st.n), '', esc(scopeLabel()))}
+    ${cell('Win days', days.length ? `${won}/${days.length}` : '—', '', days.length ? fmtPct(won / days.length) + ' of trading days' : 'no closed trades')}
+    ${cell('Best day', best ? fmtR(best[1].r) : '—', best ? cls(best[1].r) : '', best ? fmtDate(best[0]) : '&nbsp;')}
+    ${cell('Rules followed', fmtPct(st.adherence), st.adherence == null ? '' : st.adherence >= .9 ? 'pos' : 'neg', 'target 90% or more')}
+  </section>`;
+}
+const scopeLabel = () => F.acct === 'all' ? 'all accounts' : ACCTS[F.acct].toLowerCase();
+// editorial block header: 01 / Heading, hairline below, small grey uppercase meta on the right
+const edHead = (n, title, id, meta) => `<header class="ed-head"><h2 id="${id}"><span class="ed-num mono">${n} /</span> ${esc(title)}</h2><span class="ed-meta">${esc(meta)}</span></header>`;
+// per trading day (the session's date): net R of closed trades, closed / total trades, no-trade entries, the sessions behind it
+function dayAgg(list) {
+  const m = new Map();
+  list.forEach(t => {
+    if (!t.date) return;
+    if (!m.has(t.date)) m.set(t.date, { r: 0, n: 0, k: 0, nt: 0, ids: [] });
+    const d = m.get(t.date);
+    const sid = t.sid || t.id;   // trade rows carry their own id; the session is what a day opens
+    if (!d.ids.includes(sid)) d.ids.push(sid);
+    if (t.kind === 'notrade') { d.nt++; return; }
+    d.k++;
+    const r = tradeR(t);
+    if (r != null) { d.r += r; d.n++; }
+  });
+  return m;
+}
+// a day opens like a trades row: its session, or the Trades list filtered to that day when several sessions share it
+function openDay(ds, ids) {
+  if (ids.length === 1) { location.hash = '#trade/' + ids[0]; return; }
+  prefs.set('tq', Object.assign(prefs.get('tq', {}), { day: ds }));
+  location.hash = '#trades';
+}
+
 function calendar(list, ym) {
   const [y, m] = ym.split('-').map(Number);
   const first = new Date(y, m - 1, 1);
   const nDays = new Date(y, m, 0).getDate();
   const lead = (first.getDay() + 6) % 7;
-  const agg = {};
-  list.forEach(t => {
-    if (!t.date || !t.date.startsWith(ym)) return;
-    const d = agg[t.date] || (agg[t.date] = { r: 0, n: 0, nt: 0 });
-    if (t.kind === 'notrade') { d.nt++; return; }
-    const r = tradeR(t);
-    if (r != null) { d.r += r; d.n++; }
-  });
-  const vals = Object.values(agg);
+  const agg = dayAgg(list.filter(t => t.date && t.date.startsWith(ym)));
+  const vals = [...agg.values()];
   const maxA = Math.max(2, ...vals.map(v => Math.abs(v.r)));
   const tot = vals.reduce((a, v) => a + v.r, 0);
   const td = today();
   let cells = '';
   for (let i = 0; i < lead; i++) cells += '<span class="cal-cell blank"></span>';
   for (let d = 1; d <= nDays; d++) {
-    const ds = `${ym}-${pad2(d)}`, a = agg[ds], dow = (lead + d - 1) % 7;
+    const ds = `${ym}-${pad2(d)}`, a = agg.get(ds), dow = (lead + d - 1) % 7;
     let c = 'cal-cell', style = '', inner = `<span class="cal-d">${d}</span>`, attrs = 'tabindex="-1" disabled';
     if (dow > 4) c += ' wknd';
     if (a && a.n) {
@@ -879,6 +939,67 @@ function bindCalendar(list) {
   }));
 }
 
+// ── daily heatmap: weeks as columns, Mon–Fri rows (+ Sat / Sun rows only when such days exist in the window)
+const HM_WEEKS = 26, HM_CAP = 3.4;
+const addDay = (ds, n) => { const d = new Date(ds + 'T12:00:00'); d.setDate(d.getDate() + n); return isoDay(d); };
+const dow0 = ds => (new Date(ds + 'T12:00:00').getDay() + 6) % 7;   // 0 = Monday
+function heatmap(list) {
+  const days = dayAgg(list), td = today();
+  const lastDay = [...days.keys()].filter(d => d <= td).sort().pop() || td;   // the 26 weeks up to the latest entry
+  const start = addDay(addDay(lastDay, -dow0(lastDay)), -(HM_WEEKS - 1) * 7), end = addDay(start, HM_WEEKS * 7 - 1);
+  const rows = [0, 1, 2, 3, 4, ...[5, 6].filter(k => [...days.keys()].some(d => d >= start && d <= end && dow0(d) === k))];
+  const RL = ['Mon', '', 'Wed', '', 'Fri', 'Sat', 'Sun'];
+  const MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  let head = '<span></span>', body = '', net = 0, nDays = 0;
+  const monthOf = w => +addDay(start, w * 7).slice(5, 7);
+  const starts = w => w > 0 && monthOf(w) !== monthOf(w - 1);
+  for (let w = 0; w < HM_WEEKS; w++) {   // a label where a month starts; the partial first month only if the next start is 3+ weeks away
+    const lab = starts(w) || (w === 0 && !starts(1) && !starts(2));
+    head += `<span class="hm-m">${lab ? MON[monthOf(w) - 1] : ''}</span>`;
+  }
+  rows.forEach(k => {
+    body += `<span class="hm-wd${k > 4 ? ' wk' : ''}">${RL[k]}</span>`;
+    for (let w = 0; w < HM_WEEKS; w++) {
+      const ds = addDay(start, w * 7 + k), a = days.get(ds);
+      if (ds > td) { body += '<span class="hm-c future"></span>'; continue; }
+      if (!a) { body += `<span class="hm-c${k > 4 ? ' wk' : ''}"></span>`; continue; }
+      const traded = a.k > 0, o = !traded ? 'nt' : a.n === 0 ? 'open' : a.r > 0.1 ? 'win' : a.r < -0.1 ? 'loss' : 'flat';
+      const amt = (0.3 + 0.7 * Math.min(Math.abs(a.r), HM_CAP) / HM_CAP).toFixed(2);
+      const read = `${weekday(ds)} ${fmtDate(ds)} · ${traded ? (a.n ? fmtR(a.r) : 'open') + ' · ' + plural(a.k, 'trade') : 'no trade'}`;
+      if (traded) { net += a.r; nDays++; }
+      body += `<button type="button" class="hm-c ${o}${k > 4 ? ' wk' : ''}" style="--a:${amt}" data-day="${ds}" data-ids="${a.ids.join(' ')}" data-read="${esc(read)}" aria-label="${esc(read)}" tabindex="-1"></button>`;
+    }
+  });
+  const sw = (c, a) => `<i class="hm-c ${c}" style="--a:${a}"></i>`;
+  return `${edHead('02', 'Calendar', 'hm-h', `${fmtDate(start)} – ${fmtDate(lastDay)} · ${scopeLabel()}`)}
+    <div class="hm-scroll"><div class="hm" style="--rows:${rows.length}" role="group" aria-label="Daily results, ${HM_WEEKS} weeks. Arrow keys move between days, Enter opens one.">${head}${body}</div></div>
+    <div class="hm-foot">
+      <p class="hm-read mono" aria-live="polite" data-idle="${esc(nDays ? `${plural(nDays, 'trading day')} · ${fmtR(net)} net` : 'No trades in these weeks')}">${esc(nDays ? `${plural(nDays, 'trading day')} · ${fmtR(net)} net` : 'No trades in these weeks')}</p>
+      <div class="hm-legend" aria-hidden="true"><span>Loss</span>${sw('loss', 1)}${sw('loss', .55)}${sw('nt', 1)}<span>No trade</span>${sw('win', .55)}${sw('win', 1)}<span>Win</span><span class="muted">· darker = bigger R</span></div>
+    </div>`;
+}
+function bindHeatmap() {
+  const cells = $$('.hm button.hm-c').sort((a, b) => a.dataset.day.localeCompare(b.dataset.day));
+  const read = $('.hm-read');
+  if (!cells.length || !read) return;
+  const idle = read.dataset.idle;
+  cells[cells.length - 1].tabIndex = 0;   // one tab stop for the grid; arrows move within it
+  const show = c => { read.textContent = c.dataset.read; };
+  cells.forEach((c, i) => {
+    c.addEventListener('mouseenter', () => show(c));
+    c.addEventListener('mouseleave', () => { if (document.activeElement !== c) read.textContent = idle; });
+    c.addEventListener('focus', () => { cells.forEach(x => { x.tabIndex = x === c ? 0 : -1; }); show(c); });
+    c.addEventListener('blur', () => { read.textContent = idle; });
+    c.addEventListener('click', () => openDay(c.dataset.day, c.dataset.ids.split(' ')));
+    c.addEventListener('keydown', e => {
+      const j = { ArrowLeft: i - 1, ArrowUp: i - 1, ArrowRight: i + 1, ArrowDown: i + 1, Home: 0, End: cells.length - 1 }[e.key];
+      if (j == null) return;
+      e.preventDefault();
+      cells[Math.max(0, Math.min(cells.length - 1, j))].focus();
+    });
+  });
+}
+
 function recent(list) {
   const items = [...list].sort((a, b) => byTime(b, a)).slice(0, 7);
   return `<div class="card-h"><h2>Latest entries</h2><a class="link small" href="#trades">View all</a></div>
@@ -896,57 +1017,78 @@ function niceStep(range) {
 }
 function drawEquity(el, eq) {
   if (!el) return;
-  if (!eq.length) { el.innerHTML = '<div class="empty-chart">Close your first trade to start the curve.</div>'; return; }
-  const w = Math.max(280, el.clientWidth), h = el.clientHeight || 230;
-  const pl = 44, pr = 14, pt = 12, pb = 24;
-  const series = [0, ...eq.map(p => p.cum)];
+  el.onkeydown = el.onfocus = el.onblur = null;
+  if (!eq.length) { el.removeAttribute('tabindex'); el.innerHTML = '<div class="empty-chart">Close your first trade to start the curve.</div>'; return; }
+  const w = Math.max(280, el.clientWidth), h = el.clientHeight || 280, narrow = w < 520;
+  const pl = narrow ? 38 : 46, pr = narrow ? 62 : 68, pt = 18, pb = 26;   // right room for the last-value label
+  const series = [0, ...eq.map(p => p.cum)];   // point 0 = before the first trade
+  let pk = 0;
+  const peaks = series.map(v => (pk = Math.max(pk, v)));
   let mn = Math.min(...series), mx = Math.max(...series);
   if (mx - mn < 1) { mx += .5; mn -= .5; }
   const padV = (mx - mn) * .08; mn -= padV; mx += padV;
   const N = series.length - 1;
   const X = i => pl + (w - pl - pr) * (N ? i / N : 1);
   const Y = v => pt + (mx - v) / (mx - mn) * (h - pt - pb);
+  const f = v => v.toFixed(1);
   const step = niceStep(mx - mn);
   let grid = '';
   for (let v = Math.ceil(mn / step) * step; v <= mx + 1e-9; v += step) {
-    const y = Y(v).toFixed(1);
+    const y = f(Y(v));
     grid += `<line class="${Math.abs(v) < 1e-9 ? 'zero' : 'grid'}" x1="${pl}" x2="${w - pr}" y1="${y}" y2="${y}"/><text class="ax" x="${pl - 8}" y="${+y + 3.5}" text-anchor="end">${(v > 0 ? '+' : '') + (+v.toFixed(2))}R</text>`;
   }
-  const pts = series.map((v, i) => `${X(i).toFixed(1)},${Y(v).toFixed(1)}`);
-  const y0 = Y(0).toFixed(1);
-  const area = `M${X(0).toFixed(1)},${y0} L${pts.join(' L')} L${X(N).toFixed(1)},${y0} Z`;
-  const firstD = eq[0].t.date, lastD = eq[eq.length - 1].t.date;
-  el.innerHTML = `<svg viewBox="0 0 ${w} ${h}" role="img" aria-label="Equity curve: ${fmtR(eq[eq.length - 1].cum)} over ${plural(eq.length, 'trade')}">
-    <defs>
-      <clipPath id="clip-up"><rect x="0" y="0" width="${w}" height="${y0}"/></clipPath>
-      <clipPath id="clip-dn"><rect x="0" y="${y0}" width="${w}" height="${Math.max(0, h - y0)}"/></clipPath>
-    </defs>
+  const line = series.map((v, i) => `${i ? 'L' : 'M'}${f(X(i))},${f(Y(v))}`).join('');
+  const dd = `M${peaks.map((v, i) => `${f(X(i))},${f(Y(v))}`).join('L')}L${series.map((v, i) => `${f(X(i))},${f(Y(v))}`).reverse().join('L')}Z`;   // between the running peak and the curve
+  const T = S.settings.testTarget, last = series[N];
+  const test = T && N >= T ? `<line class="test" x1="${f(X(T))}" x2="${f(X(T))}" y1="${pt}" y2="${h - pb}"/><text class="ax test-l" x="${f(X(T) + 5)}" y="${pt + 8}">${T}-trade test</text>` : '';
+  el.tabIndex = 0;
+  el.setAttribute('role', 'group');
+  el.setAttribute('aria-label', `Equity curve: ${fmtR(last)} over ${plural(N, 'trade')}. Arrow keys step through trades.`);
+  el.innerHTML = `<svg viewBox="0 0 ${w} ${h}" aria-hidden="true">
     ${grid}
-    <path class="area-pos" d="${area}" clip-path="url(#clip-up)"/>
-    <path class="area-neg" d="${area}" clip-path="url(#clip-dn)"/>
-    <polyline class="line" points="${pts.join(' ')}"/>
-    <circle class="dot" cx="${X(N).toFixed(1)}" cy="${Y(series[N]).toFixed(1)}" r="3.5"/>
-    <text class="ax" x="${pl}" y="${h - 6}">${fmtDate(firstD)}</text>
-    <text class="ax" x="${w - pr}" y="${h - 6}" text-anchor="end">${fmtDate(lastD)}</text>
+    <path class="dd" d="${dd}"/>
+    ${test}
+    <path class="line" d="${line}" data-draw/>
+    <circle class="dot" cx="${f(X(N))}" cy="${f(Y(last))}" r="3.5"/>
+    <text class="last-v ${cls(last)}" x="${f(X(N) + 8)}" y="${f(Y(last) + 4)}">${fmtR(last)}</text>
+    <text class="ax" x="${pl}" y="${h - 6}">${fmtDate(eq[0].t.date)}</text>
+    <text class="ax" x="${w - pr}" y="${h - 6}" text-anchor="end">${fmtDate(eq[N - 1].t.date)}</text>
     <line class="cursor" x1="0" x2="0" y1="${pt}" y2="${h - pb}" visibility="hidden"/>
+    <circle class="cur-dot" r="4" visibility="hidden"/>
     <rect x="${pl}" y="0" width="${w - pl - pr}" height="${h}" fill="transparent" class="hit"/>
-  </svg><div class="tip" hidden></div>`;
-  const hit = $('.hit', el), tip = $('.tip', el), cur = $('.cursor', el);
+  </svg><div class="tip" hidden></div><p class="sr-only" aria-live="polite"></p>`;
+  const tip = $('.tip', el), cur = $('.cursor', el), cd = $('.cur-dot', el), live = $('.sr-only', el);
+  let at = N;
+  const show = i => {
+    at = Math.max(1, Math.min(N, i));
+    const p = eq[at - 1], x = X(at), y = Y(series[at]);
+    cur.setAttribute('x1', x); cur.setAttribute('x2', x); cur.setAttribute('visibility', 'visible');
+    cd.setAttribute('cx', x); cd.setAttribute('cy', y); cd.setAttribute('visibility', 'visible');
+    tip.hidden = false;
+    tip.style.left = Math.max(80, Math.min(w - 80, x)) + 'px';
+    tip.style.top = y + 'px';
+    const txt = `Trade ${at} · ${fmtDate(p.t.date)} · ${fmtR(p.r)}`;
+    tip.innerHTML = `${txt}<br>Total ${fmtR(p.cum)}`;
+    live.textContent = `${txt}, total ${fmtR(p.cum)}`;
+  };
+  const out = () => { tip.hidden = true; cur.setAttribute('visibility', 'hidden'); cd.setAttribute('visibility', 'hidden'); };
   const move = ev => {
     const box = el.getBoundingClientRect();
     const x = (ev.touches ? ev.touches[0].clientX : ev.clientX) - box.left;
-    const i = Math.max(1, Math.min(N, Math.round((x - pl) / (w - pl - pr) * N)));
-    const p = eq[i - 1];
-    cur.setAttribute('x1', X(i)); cur.setAttribute('x2', X(i)); cur.setAttribute('visibility', 'visible');
-    tip.hidden = false;
-    tip.style.left = Math.max(70, Math.min(w - 70, X(i))) + 'px';
-    tip.style.top = Y(series[i]) + 'px';
-    tip.innerHTML = `${fmtDate(p.t.date)} · ${fmtR(p.r)}<br>Total ${fmtR(p.cum)}`;
+    show(Math.round((x - pl) / (w - pl - pr) * N));
   };
-  const out = () => { tip.hidden = true; cur.setAttribute('visibility', 'hidden'); };
+  const hit = $('.hit', el);
   hit.addEventListener('mousemove', move);
   hit.addEventListener('touchmove', move, { passive: true });
-  hit.addEventListener('mouseleave', out);
+  hit.addEventListener('mouseleave', () => { if (document.activeElement !== el) out(); });
+  el.onfocus = () => show(at);
+  el.onblur = out;
+  el.onkeydown = e => {
+    const j = { ArrowLeft: at - 1, ArrowDown: at - 1, ArrowRight: at + 1, ArrowUp: at + 1, Home: 1, End: N, PageUp: at + 10, PageDown: at - 10 }[e.key];
+    if (j == null) return;
+    e.preventDefault();
+    show(j);
+  };
 }
 function debounce(fn, ms) { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; }
 
@@ -968,6 +1110,8 @@ function viewTrades() {
     if (q.prof && profs.includes(q.prof)) list = list.filter(t => t.profile === q.prof);
     if (q.shots) list = list.filter(t => (t.images || []).length);
   }
+  const active = ['valid', 'acct', 'period', 'ver', 'instr'].filter(k => String(F[k]) !== 'all').length
+    + [q.text, q.out !== 'all', q.day, mode === 'gallery' && q.prof && profs.includes(q.prof), mode === 'gallery' && q.shots].filter(Boolean).length;
   const quick = mode === 'gallery' ? `<div class="chips g-chips" role="group" aria-label="Quick filters">
     <button type="button" class="chip" data-q="prof" data-v="" aria-pressed="${!q.prof || !profs.includes(q.prof)}">Any profile</button>
     ${profs.map(k => `<button type="button" class="chip" data-q="prof" data-v="${esc(k)}" aria-pressed="${q.prof === k}">${esc(profLabel(k))}</button>`).join('')}
@@ -977,11 +1121,13 @@ function viewTrades() {
   ${sampleBanner()}
   <header class="page-head">
     <div><h1>Trades</h1><p class="sub">${list.length} entr${list.length === 1 ? 'y' : 'ies'}${q.day ? ` on ${fmtDate(q.day)} <button type="button" class="chip-x" id="clear-day">clear day</button>` : ''}</p></div>
-    <div class="filters">${filterBar()}<div class="seg" role="group" aria-label="Layout">${[['list', 'List'], ['gallery', 'Gallery']].map(([v, l]) => `<button type="button" data-tview="${v}" aria-pressed="${mode === v}">${l}</button>`).join('')}</div><a class="btn" href="#import">Import from MT5</a></div>
+    <div class="head-r"><div class="seg" role="group" aria-label="Layout">${[['list', 'List'], ['gallery', 'Gallery']].map(([v, l]) => `<button type="button" data-tview="${v}" aria-pressed="${mode === v}">${l}</button>`).join('')}</div><a class="btn" href="#import">Import from MT5</a></div>
   </header>
-  <div class="toolbar">
-    <input class="search" type="search" id="tq" placeholder="Search notes, tags, instrument, review answers…" value="${esc(q.text)}" aria-label="Search entries">
-    ${seg('out', [['all', 'All'], ['win', 'Wins'], ['loss', 'Losses'], ['be', 'Breakeven'], ['notrade', 'No-trade']], q.out)}
+  <div class="fbar" role="group" aria-label="Filter entries">
+    <input class="search" type="search" id="tq" placeholder="Search entries…" title="Searches notes, tags, instrument and review answers" value="${esc(q.text)}" aria-label="Search entries">
+    <div class="filters">${filterBar()}</div>
+    <div class="fb-out">${seg('out', [['all', 'All'], ['win', 'Wins'], ['loss', 'Losses'], ['be', 'Breakeven'], ['notrade', 'No-trade']], q.out)}</div>
+    <div class="fb-end"><span class="fb-count mono${active ? ' on' : ''}" title="${plural(active, 'active filter')}"><span aria-hidden="true">${active}</span><span class="sr-only">${plural(active, 'active filter')}</span></span><button type="button" class="btn small ghost" id="f-reset" ${active ? '' : 'disabled'}>Reset filters</button></div>
   </div>
   ${quick}
   ${list.length ? (mode === 'gallery' ? tradeGallery(list) : tradeTable(list)) : `<div class="card"><p class="empty" style="margin:0 0 12px">No entries match these filters.</p><a class="btn" href="#new">Log an entry</a></div>`}`;
@@ -991,7 +1137,13 @@ function viewTrades() {
   const save = patch => { prefs.set('tq', Object.assign(q, patch)); };
   const s = $('#tq');
   s.addEventListener('input', debounce(() => { save({ text: s.value }); viewTrades(); const n = $('#tq'); n.focus(); n.setSelectionRange(n.value.length, n.value.length); }, 250));
-  $$('.toolbar [data-seg="out"] button').forEach(b => b.addEventListener('click', () => { save({ out: b.dataset.v }); viewTrades(); }));
+  $$('.fb-out [data-seg="out"] button').forEach(b => b.addEventListener('click', () => { save({ out: b.dataset.v }); viewTrades(); }));
+  $('#f-reset').addEventListener('click', () => {   // every filter back to its default, same values the pages start from
+    Object.assign(F, { valid: 'all', acct: 'all', period: 'all', ver: 'all', instr: 'all' }); prefs.set('filters', F);
+    save({ text: '', out: 'all', day: '', prof: '', shots: false });
+    viewTrades();
+    $('#tq').focus();
+  });
   const cd = $('#clear-day');
   if (cd) cd.addEventListener('click', () => { save({ day: '' }); viewTrades(); });
   $$('[data-tview]').forEach(b => b.addEventListener('click', () => { if (b.dataset.tview !== mode) { prefs.set('tview', b.dataset.tview); viewTrades(); } }));
@@ -1906,6 +2058,10 @@ async function viewSettings() {
       </div>
     </article>
     <article class="card">
+      <h2 style="margin-bottom:12px">Display</h2>
+      <label class="check" style="max-width:420px"><input type="checkbox" id="set-ticker" ${st.ticker === false ? '' : 'checked'}> Show the ticker bar (today, rules followed, never-do list)</label>
+    </article>
+    <article class="card">
       <h2 style="margin-bottom:12px">Erase everything</h2>
       <p class="set-note">Deletes every entry and screenshot from this browser${cloud.user ? ' and from your database' : ''}. Export a backup first.</p>
       <div class="set-actions"><input class="search" id="erase-txt" placeholder="Type ERASE to confirm" aria-label="Type ERASE to confirm"><button type="button" class="btn danger" id="erase" disabled>Erase</button></div>
@@ -1944,6 +2100,7 @@ async function viewSettings() {
   if (cout) cout.addEventListener('click', async () => { await Cloud.signOut(); toast('Signed out. Entries stay in this browser.'); });
   const p = $('#persist');
   if (p) p.addEventListener('click', async () => { const ok = await navigator.storage.persist(); toast(ok ? 'Storage protected' : 'The browser declined; keep exporting backups'); viewSettings(); });
+  $('#set-ticker').addEventListener('change', async e => { st.ticker = e.target.checked; await saveSettings(); renderTicker(); toast(e.target.checked ? 'Ticker on' : 'Ticker off'); });
   const et = $('#erase-txt'), eb = $('#erase');
   et.addEventListener('input', () => { eb.disabled = et.value.trim() !== 'ERASE'; });
   eb.addEventListener('click', async () => {
@@ -2088,6 +2245,27 @@ function sampleData() {
   return out;
 }
 
+// ───────────────────────── ticker ─────────────────────────
+// a quiet line at the very top: today in the dashboard's scope, then the never-do list. Decorative loop copy is aria-hidden.
+function renderTicker() {
+  const el = $('#ticker');
+  if (!el) return;
+  if (S.settings.ticker === false || !S.sessions.length) { el.hidden = true; el.innerHTML = ''; return; }
+  const list = filtered(), td = today(), st = stats(list);
+  const now = stats(list.filter(t => t.date === td));
+  const items = [
+    `<b>Today</b> ${now.n ? `<span class="${cls(now.netR)}">${fmtR(now.netR)}</span> · ${plural(now.n, 'trade')}` : 'no closed trade yet'}`,
+    `<b>Rules followed</b> ${fmtPct(st.adherence)}`,
+    `<b>Net</b> <span class="${cls(st.netR)}">${fmtR(st.netR)}</span> · ${esc(scopeLabel())}`,
+    ...(S.settings.donts || []).map(d => `<b class="neg">✕</b> ${esc(d.text)}`),
+  ];
+  const line = items.map(x => `<span class="tk-i">${x}</span>`).join('');
+  const plain = items.map(x => x.replace(/<[^>]+>/g, '')).join(' · ');
+  el.innerHTML = `<div class="tk-track" style="--dur:${Math.max(36, Math.round(plain.length * 0.35))}s"><span class="tk-run">${line}</span><span class="tk-run" aria-hidden="true">${line}</span></div>`;
+  el.setAttribute('aria-label', plain);
+  el.hidden = false;
+}
+
 // ───────────────────────── theme ─────────────────────────
 const THEMES = ['system', 'light', 'dark'];
 const THEME_ICON = { system: '◐', light: '☀', dark: '☾' };
@@ -2127,6 +2305,7 @@ async function route() {
   else if (view === 'review') viewReview(id === 'checkpoint' ? 'checkpoint' : 'week', location.hash.split('/')[2]);
   else viewDashboard();
   window.scrollTo(0, 0);
+  renderTicker();
   enterView();
 }
 
