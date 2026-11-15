@@ -125,7 +125,7 @@ function viewReview(tab, arg) {
     <div><h1>Review</h1><p class="sub">${tab === 'checkpoint' ? 'What your numbers say so far, and the one change to make.' : 'The week in one page, and the one change for next week.'}</p></div>
     <div class="seg" role="group"><a class="btn ${tab === 'checkpoint' ? 'ghost' : ''}" href="#review/week">Week</a><a class="btn ${tab === 'checkpoint' ? '' : 'ghost'}" href="#review/checkpoint">Checkpoint</a></div>
   </header>
-  ${body}`;
+  <div class="ed-sections">${body}</div>`;
   bindSampleBanner(() => viewReview(tab, arg));
   if (tab === 'checkpoint') bindCheckpoint(); else bindWeek(arg);
 }
@@ -143,12 +143,12 @@ function weekHTML(arg) {
   <div class="week-nav"><a class="icon-btn" href="#review/week/${addDays(mon, -7)}" aria-label="Previous week">‹</a>
     <h2>${fmtDate(mon)} – ${fmtDate(sun)}</h2><a class="icon-btn" href="#review/week/${addDays(mon, 7)}" aria-label="Next week">›</a></div>
   ${!sess.length ? '<article class="card"><p class="empty" style="margin:0">No session logged this week.</p></article>' : `
-  <section class="kpis" aria-label="This week">
-    ${kpi('Net result', fmtR(st.netR), cls(st.netR), st.pnl != null ? `<span class="${cls(st.pnl)}">${fmtUsd(st.pnl)}</span>` : '')}
-    ${kpi('Trades', String(st.n), '', `${st.wins}W · ${st.losses}L · ${st.be}BE`)}
-    ${kpi('Bias right', fmtPct(rd.bias), rd.bias == null ? '' : rd.bias >= .5 ? 'pos' : 'neg', plural(rd.graded.length, 'graded session'))}
-    ${kpi('Rules followed', fmtPct(rd.plan), rd.plan == null ? '' : rd.plan >= .9 ? 'pos' : 'neg', 'sessions')}
-  </section>
+  <section class="stats" aria-label="This week"><div class="stats-sub c4">
+    ${stat('Net result', fmtR(st.netR), cls(st.netR), st.pnl != null ? `<span class="${cls(st.pnl)}">${fmtUsd(st.pnl)}</span>` : '')}
+    ${stat('Trades', String(st.n), '', `${st.wins}W · ${st.losses}L · ${st.be}BE`)}
+    ${stat('Bias right', fmtPct(rd.bias), rd.bias == null ? '' : rd.bias >= .5 ? 'pos' : 'neg', plural(rd.graded.length, 'graded session'))}
+    ${stat('Rules followed', fmtPct(rd.plan), rd.plan == null ? '' : rd.plan >= .9 ? 'pos' : 'neg', 'sessions')}
+  </div></section>
   <section class="row">
     <article class="card">
       <h2 style="margin-bottom:12px">Sessions</h2>
@@ -228,13 +228,13 @@ function checkpointHTML(arg) {
   </div>
   <section class="row">
     <article class="card">
-      <h2 style="margin-bottom:6px">1 · Does the system make money?</h2>
+      <h2 style="margin-bottom:6px">Does the system make money?</h2>
       <div class="test-big mono ${cls(all && all.m)}">${all ? fmtR(all.m) : '—'}<span class="small muted"> per trade</span></div>
       <p class="small muted" style="margin:0 0 10px">Likely range: ${fmtRange(all, v => fmtR(v))} over ${all ? plural(all.n, 'trade') : '0 trades'}</p>
       <p class="status ${verdict[0]}">${verdict[1]}</p>
     </article>
     <article class="card">
-      <h2 style="margin-bottom:12px">2 · System or discipline?</h2>
+      <h2 style="margin-bottom:12px">System or discipline?</h2>
       <dl class="kv">
         <div><dt>Rules followed</dt><dd class="${cls(fol && fol.m)}">${fol ? fmtR(fol.m) + ' · ' + fol.n : '—'}</dd></div>
         <div><dt>Rules broken</dt><dd class="${cls(brk && brk.m)}">${brk ? fmtR(brk.m) + ' · ' + brk.n : '—'}</dd></div>
@@ -244,24 +244,24 @@ function checkpointHTML(arg) {
   </section>
   <section class="row">
     <article class="card">
-      <h2 style="margin-bottom:12px">3 · Which part of the read is weakest?</h2>
+      <h2 style="margin-bottom:12px">Which part of the read is weakest?</h2>
       <dl class="kv">${reads.map(([k, r]) => `<div><dt>${k} right</dt><dd class="${r && r.n >= 10 ? (r.p >= .5 ? 'pos' : 'neg') : ''}">${r ? fmtPct(r.p) : '—'} <span class="muted small">${r ? `${fmtPct(r.lo)}–${fmtPct(r.hi)} · ${r.n}` : ''}</span></dd></div>`).join('')}</dl>
       <p class="status">${weakest ? `Weakest: <b>${weakest[0].toLowerCase()}</b>. ${weakest[0] === 'Bias' ? 'Direction is the problem; profiles and entries can’t fix that.' : weakest[0] === 'Profile' ? 'Direction is fine more often than timing: the profile call is where days go wrong.' : 'Direction holds but targets are too far: aim at nearer draws.'}` : 'Each part needs 10 graded sessions before comparing.'}</p>
     </article>
     <article class="card">
-      <h2 style="margin-bottom:12px">4 · What costs the most R?</h2>
+      <h2 style="margin-bottom:12px">What costs the most R?</h2>
       ${leaks.length ? `<ul class="plain">${leaks.map(g => `<li>${tag(g.label, 'bad')} <span class="mono neg">${fmtR(g.netR, 1)}</span> <span class="muted small">over ${plural(g.n, 'trade')}</span></li>`).join('')}</ul>` : '<p class="empty" style="margin:0">No mistake has cost R in this version.</p>'}
     </article>
   </section>
   <section class="row">
     <article class="card">
-      <h2 style="margin-bottom:12px">5 · Where it works, where it doesn’t</h2>
+      <h2 style="margin-bottom:12px">Where it works, where it doesn’t</h2>
       ${splits.length ? `<ul class="plain">${best.map(g => `<li><span class="pos">▲</span> ${esc(g.d)}: <b>${esc(g.label)}</b> <span class="mono pos">${fmtR(g.exp)}</span> <span class="muted small">per trade · ${g.n}</span></li>`).join('')}
         ${worst.map(g => `<li><span class="neg">▼</span> ${esc(g.d)}: <b>${esc(g.label)}</b> <span class="mono ${cls(g.exp)}">${fmtR(g.exp)}</span> <span class="muted small">per trade · ${g.n}</span></li>`).join('')}</ul>
         <p class="small muted" style="margin:10px 0 0">Hypotheses to check on the next batch, not conclusions.</p>` : '<p class="empty" style="margin:0">Groups need 10 trades each before they’re compared.</p>'}
     </article>
     <article class="card">
-      <h2 style="margin-bottom:12px">6 · Failure signs and lessons</h2>
+      <h2 style="margin-bottom:12px">Failure signs and lessons</h2>
       ${signs.length ? `<ul class="plain">${signs.slice(-8).reverse().map(x => `<li>${esc(x)}</li>`).join('')}</ul>` : '<p class="empty" style="margin:0">Invalidations from the timelines and lessons from wrong days appear here.</p>'}
     </article>
   </section>

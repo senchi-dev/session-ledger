@@ -572,8 +572,43 @@ function chips(name, opts, selected, extra = '') {
   return `<div class="chips" data-chips="${name}">${opts.map(o =>
     `<button type="button" class="chip ${extra}" data-v="${esc(o)}" aria-pressed="${selected.includes(o)}">${esc(o)}</button>`).join('')}</div>`;
 }
-const kpi = (k, v, c = '', s = '') => `<div class="kpi"><div class="k">${esc(k)}</div><div class="v ${c}">${v}</div><div class="s">${s || '&nbsp;'}</div></div>`;
 const tag = (text, c = '') => `<span class="tag ${c}">${esc(text)}</span>`;
+// editorial stat: big number, small grey label, hairline-divided (no box). data-count = counts up when the view is entered
+const stat = (k, v, c = '', s = '') => `<div class="stat"><div class="k">${esc(k)}</div><div class="v mono ${c}" data-count>${v}</div><div class="s">${s || '&nbsp;'}</div></div>`;
+
+// ── motion: only on entering a view, never on filter re-renders; off for reduced motion
+const reducedMotion = () => window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches;
+function countUp(root) {
+  if (reducedMotion()) return;
+  const re = /\d[\d,]*(?:\.\d+)?/g;
+  const targets = [];
+  $$('[data-count]', root).forEach(el => {
+    const w = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+    for (let n = w.nextNode(); n; n = w.nextNode()) if (re.test(n.data)) { re.lastIndex = 0; targets.push([n, n.data]); }
+  });
+  if (!targets.length) return;
+  const fmt = (m, e) => {
+    const dec = (m.split('.')[1] || '').length, v = parseFloat(m.replace(/,/g, '')) * e;
+    return m.includes(',') ? v.toLocaleString('en-US', { minimumFractionDigits: dec, maximumFractionDigits: dec }) : v.toFixed(dec);
+  };
+  const t0 = performance.now(), dur = 700;
+  const step = now => {
+    const p = Math.min(1, (now - t0) / dur), e = 1 - Math.pow(1 - p, 3);   // ease-out cubic, no overshoot
+    targets.forEach(([n, orig]) => { n.data = p === 1 ? orig : orig.replace(re, m => fmt(m, e)); });
+    if (p < 1) requestAnimationFrame(step);
+  };
+  targets.forEach(([n, orig]) => { n.data = orig.replace(re, m => fmt(m, 0)); });
+  requestAnimationFrame(step);
+}
+function enterView() {
+  if (reducedMotion()) return;
+  app.classList.remove('view-in');
+  void app.offsetWidth;   // restart the animation
+  app.classList.add('view-in');
+  clearTimeout(enterView._t);
+  enterView._t = setTimeout(() => app.classList.remove('view-in'), 1200);   // later re-renders (filters, search) stay still
+  countUp(app);
+}
 
 function filterBar() {
   const instrs = [...new Set(S.trades.map(t => t.instrument).filter(Boolean))];
@@ -625,15 +660,20 @@ function viewDashboard() {
     <div class="filters">${filterBar()}</div>
   </header>
 
-  <section class="kpis" aria-label="Key statistics">
-    ${kpi('Net result', fmtR(st.netR), cls(st.netR), st.pnl != null ? `<span class="${cls(st.pnl)}">${fmtUsd(st.pnl)}</span>` : '')}
-    ${kpi('Expectancy', fmtR(st.exp), cls(st.exp), 'average R per trade')}
-    ${kpi('Win rate', fmtPct(st.winRate), '', `${st.wins}W · ${st.losses}L · ${st.be}BE`)}
-    ${kpi('Profit factor', pf, st.pf == null ? '' : st.pf >= 1 ? 'pos' : 'neg', 'gross win ÷ gross loss')}
-    ${kpi('Avg win / loss', `${st.avgWin == null ? '—' : '+' + st.avgWin.toFixed(1)} / ${st.avgLoss == null ? '—' : '−' + Math.abs(st.avgLoss).toFixed(1)}`, '', 'in R')}
-    ${kpi('Max drawdown', st.maxDD ? '−' + st.maxDD.toFixed(2) + 'R' : '0.00R', st.maxDD ? 'neg' : '', 'peak to trough')}
-    ${kpi('Rules followed', fmtPct(st.adherence), st.adherence == null ? '' : st.adherence >= .9 ? 'pos' : 'neg', 'target 90% or more')}
-    ${kpi('Current streak', st.streak ? `${st.streak.n} ${st.streak.type === 'win' ? 'W' : 'L'}` : '—', st.streak ? (st.streak.type === 'win' ? 'pos' : 'neg') : '', st.streak ? (st.streak.type === 'win' ? 'wins in a row' : 'losses in a row') : 'breakevens ignored')}
+  <section class="stats" aria-label="Key statistics">
+    <div class="stats-hero">
+      ${stat('Net result', fmtR(st.netR), cls(st.netR), st.pnl != null ? `<span class="${cls(st.pnl)}">${fmtUsd(st.pnl)}</span>` : '')}
+      ${stat('Win rate', fmtPct(st.winRate), '', `${st.wins}W · ${st.losses}L · ${st.be}BE`)}
+      ${stat('Closed trades', String(st.n), '', F.valid === 'all' ? plural(nts.length, 'no-trade day') : F.valid + ' trades only')}
+    </div>
+    <div class="stats-sub">
+      ${stat('Expectancy', fmtR(st.exp), cls(st.exp), 'average R per trade')}
+      ${stat('Profit factor', pf, st.pf == null ? '' : st.pf >= 1 ? 'pos' : 'neg', 'gross win ÷ gross loss')}
+      ${stat('Avg win / loss', `${st.avgWin == null ? '—' : '+' + st.avgWin.toFixed(1)} / ${st.avgLoss == null ? '—' : '−' + Math.abs(st.avgLoss).toFixed(1)}`, '', 'in R')}
+      ${stat('Max drawdown', st.maxDD ? '−' + st.maxDD.toFixed(2) + 'R' : '0.00R', st.maxDD ? 'neg' : '', 'peak to trough')}
+      ${stat('Rules followed', fmtPct(st.adherence), st.adherence == null ? '' : st.adherence >= .9 ? 'pos' : 'neg', 'target 90% or more')}
+      ${stat('Current streak', st.streak ? `${st.streak.n} ${st.streak.type === 'win' ? 'W' : 'L'}` : '—', st.streak ? (st.streak.type === 'win' ? 'pos' : 'neg') : '', st.streak ? (st.streak.type === 'win' ? 'wins in a row' : 'losses in a row') : 'breakevens ignored')}
+    </div>
   </section>
 
   <section class="row one">${ftmoCard()}</section>
@@ -943,7 +983,10 @@ function viewTrades() {
   $$('.toolbar [data-seg="out"] button').forEach(b => b.addEventListener('click', () => { save({ out: b.dataset.v }); viewTrades(); }));
   const cd = $('#clear-day');
   if (cd) cd.addEventListener('click', () => { save({ day: '' }); viewTrades(); });
-  $$('.tt tbody tr').forEach(tr => tr.addEventListener('click', () => { location.hash = '#trade/' + tr.dataset.id; }));
+  $$('.tt tbody tr').forEach(tr => {
+    tr.addEventListener('click', () => { location.hash = '#trade/' + tr.dataset.id; });
+    tr.addEventListener('keydown', e => { if (e.key === 'Enter') location.hash = '#trade/' + tr.dataset.id; });
+  });
 }
 
 function readCell(t) {
@@ -953,24 +996,27 @@ function readCell(t) {
   return `<span class="muted">${esc([b, t.profile ? profLabel(t.profile).replace(' reversal', '') : ''].filter(Boolean).join(' · '))}</span>${mark}`;
 }
 
+const OUT_WORD = { win: 'Win', loss: 'Loss', be: 'Breakeven', open: 'Open', notrade: 'No trade' };
+const dot = o => `<span class="dot ${o}" title="${OUT_WORD[o]}" aria-hidden="true"></span>`;
 function tradeTable(list) {
-  return `<div class="card table-wrap"><table class="tt">
-  <thead><tr><th>Date</th><th>Account</th><th>Instrument</th><th>Side</th><th>Read</th><th class="r">Result</th><th class="r">P&amp;L</th><th>Rules</th><th class="r">Shots</th></tr></thead>
+  return `<div class="table-wrap ledger-wrap"><table class="tt ledger">
+  <thead><tr><th>Date</th><th>Account</th><th>Instrument</th><th>Side</th><th>Read</th><th>Rules</th><th class="r">Shots</th><th class="r">P&amp;L</th><th class="r">Result</th></tr></thead>
   <tbody>${list.map(t => {
     const shots = (t.images || []).length || '';
     if (t.kind === 'notrade') {
-      return `<tr class="nt" data-id="${t.id}"><td class="mono">${fmtDate(t.date)} <span class="muted">${weekday(t.date)}</span></td><td>${tag(ACCTS[t.acct] || '—')}</td>
-      <td colspan="2">No-trade day${(t.reasons || []).length ? ' · ' + esc(t.reasons.join(', ')) : ''}</td><td>${readCell(t)}</td><td class="r mono">pass</td><td></td>
-      <td>${t.missed ? tag('missed trade', 'bad') : tag('good pass', 'good')}</td><td class="r mono">${shots}</td></tr>`;
+      return `<tr class="nt" data-id="${t.id}" tabindex="0"><td class="mono">${dot('notrade')}${fmtDate(t.date)} <span class="muted">${weekday(t.date)}</span></td><td>${tag(ACCTS[t.acct] || '—')}</td>
+      <td colspan="2">No-trade day${(t.reasons || []).length ? ' · ' + esc(t.reasons.join(', ')) : ''}</td><td>${readCell(t)}</td>
+      <td>${t.missed ? tag('missed trade', 'bad') : tag('good pass', 'good')}</td><td class="r mono">${shots}</td><td></td><td class="r mono res">pass</td></tr>`;
     }
     const r = tradeR(t), p = tradePnl(t);
-    return `<tr data-id="${t.id}"><td class="mono">${fmtDate(t.date)} <span class="muted">${weekday(t.date)}${t.time ? ' ' + esc(t.time) : ''}</span></td>
+    return `<tr data-id="${t.id}" tabindex="0"><td class="mono">${dot(outcome(r))}${fmtDate(t.date)} <span class="muted">${weekday(t.date)}${t.time ? ' ' + esc(t.time) : ''}</span></td>
     <td>${tag(ACCTS[t.acct] || '—')}</td><td>${esc(t.instrument || '—')}</td>
     <td><span class="side ${t.dir === 'short' ? 'short' : 'long'}">${t.dir === 'short' ? 'Short' : 'Long'}</span></td>
     <td>${readCell(t)}</td>
-    <td class="r mono ${cls(r)}">${r == null ? '<span class="muted">open</span>' : fmtR(r)}</td><td class="r mono ${cls(p)}">${fmtUsd(p)}</td>
     <td>${t.followed === true ? tag('valid', 'good') : t.followed === false ? tag('invalid', 'bad') : '<span class="muted">—</span>'}</td>
-    <td class="r mono muted">${shots}</td></tr>`;
+    <td class="r mono muted">${shots}</td>
+    <td class="r mono ${cls(p)}">${fmtUsd(p)}</td>
+    <td class="r mono res ${cls(r)}">${r == null ? '<span class="muted">open</span>' : fmtR(r)}</td></tr>`;
   }).join('')}</tbody></table></div>`;
 }
 
@@ -1003,11 +1049,11 @@ async function viewDetail(id) {
     ${has(s.notes) ? `<article class="card span3"><h2 style="margin-bottom:12px">Notes</h2><p class="notes">${esc(s.notes)}</p></article>` : ''}
     <article class="card span3">
       <div class="card-h"><h2>Evidence</h2><span class="muted small">${plural(shots.length, 'screenshot')}</span></div>
-      ${shots.length ? `<div class="gallery">${shots.map((x, i) => `<button type="button" data-shot="${i}"><img src="${x.url}" alt="${esc(x.label)}" loading="lazy"><span>${esc(x.label)}</span></button>`).join('')}</div>` : '<p class="empty">No screenshots attached.</p>'}
+      ${shots.length ? `<div class="gallery">${shots.map((x, i) => `<button type="button" data-shot="${i}" aria-label="View ${esc(x.label)} full screen"><span class="g-img"><img src="${x.url}" alt="${esc(x.label)}" loading="lazy"></span><span class="g-cap">${esc(x.label)}</span></button>`).join('')}</div>` : '<p class="empty">No screenshots attached.</p>'}
     </article>
   </section>`;
 
-  $$('[data-shot]').forEach(b => b.addEventListener('click', () => openLightbox(shots, Number(b.dataset.shot))));
+  $$('[data-shot]').forEach(b => b.addEventListener('click', () => openLightbox(shots, Number(b.dataset.shot), b)));
   $('#del').addEventListener('click', () => {
     $('#confirm').innerHTML = `<div class="confirm"><span>Delete this session${views.length ? `, its ${plural(views.length, 'trade')}` : ''}${shots.length ? ` and its ${plural(shots.length, 'screenshot')}` : ''}? This can’t be undone.</span><div><button type="button" class="btn ghost" id="c-no">Cancel</button><button type="button" class="btn danger solid" id="c-yes">Delete</button></div></div>`;
     $('#c-no').addEventListener('click', () => { $('#confirm').innerHTML = ''; });
@@ -1131,25 +1177,37 @@ function reviewKey(d) {
 }
 
 // lightbox
-const LB = { shots: [], i: 0 };
-function openLightbox(shots, i) {
-  LB.shots = shots; LB.i = i;
+const LB = { shots: [], i: 0, opener: null };
+function openLightbox(shots, i, opener) {
+  if (!shots.length) return;
+  LB.shots = shots; LB.i = Math.max(0, i);
   const lb = $('#lightbox');
+  if (lb.hidden) LB.opener = opener || document.activeElement;   // Safari doesn't focus buttons on click, so the trigger is passed in
   lb.hidden = false;
-  showShot();
+  document.body.classList.add('lb-open');
+  showShot(false);
   $('.lb-close', lb).focus();
 }
-function showShot() {
-  const lb = $('#lightbox'), s = LB.shots[LB.i];
-  $('img', lb).src = s.url; $('img', lb).alt = s.label;
+function showShot(fade = true) {
+  const lb = $('#lightbox'), s = LB.shots[LB.i], img = $('img', lb);
+  img.src = s.url; img.alt = s.label;
   $('figcaption', lb).textContent = `${s.label} · ${LB.i + 1}/${LB.shots.length}`;
   $('.lb-prev', lb).hidden = $('.lb-next', lb).hidden = LB.shots.length < 2;
+  if (fade && !reducedMotion() && img.animate) img.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 420, easing: 'cubic-bezier(.22,.61,.36,1)' });
 }
-const closeLightbox = () => { $('#lightbox').hidden = true; };
+const closeLightbox = () => {
+  const lb = $('#lightbox');
+  if (lb.hidden) return;
+  lb.hidden = true;
+  document.body.classList.remove('lb-open');
+  const o = LB.opener; LB.opener = null;
+  if (o && o.isConnected && o.focus) o.focus({ preventScroll: true });   // back to the thumbnail that opened it
+};
+const stepShot = d => { if (LB.shots.length < 2) return; LB.i = (LB.i + d + LB.shots.length) % LB.shots.length; showShot(); };
 $('.lb-close').addEventListener('click', closeLightbox);
-$('.lb-prev').addEventListener('click', () => { LB.i = (LB.i - 1 + LB.shots.length) % LB.shots.length; showShot(); });
-$('.lb-next').addEventListener('click', () => { LB.i = (LB.i + 1) % LB.shots.length; showShot(); });
-$('#lightbox').addEventListener('click', e => { if (e.target.id === 'lightbox') closeLightbox(); });
+$('.lb-prev').addEventListener('click', () => stepShot(-1));
+$('.lb-next').addEventListener('click', () => stepShot(1));
+$('#lightbox').addEventListener('click', e => { if (!e.target.closest('img, button')) closeLightbox(); });   // anywhere outside the image
 
 // ───────────────────────── form ─────────────────────────
 async function viewForm(id) {
@@ -1472,7 +1530,7 @@ async function viewForm(id) {
   $('#nt-review').addEventListener('input', e => { const k = e.target.dataset.ntq; if (k != null) d.review[Q[ntKey()][+k]] = e.target.value; });
 
   const renderThumbs = () => {
-    $('#thumbs').innerHTML = form.imgs.map((im, i) => `<figure class="thumb"><img src="${im.url}" alt="${esc(im.label)}">
+    $('#thumbs').innerHTML = form.imgs.map((im, i) => `<figure class="thumb"><button type="button" class="thumb-zoom" data-zoom="${i}" aria-label="View ${esc(imgLabel(im.label))} full screen"><img src="${im.url}" alt="${esc(im.label)}"></button>
       <figcaption><select data-img="${i}" aria-label="Screenshot label">${(IMG_LABELS.includes(imgLabel(im.label)) ? IMG_LABELS : [...IMG_LABELS, im.label]).map(l => `<option ${l === imgLabel(im.label) ? 'selected' : ''}>${l}</option>`).join('')}</select>
       <button type="button" class="icon-btn" data-rm="${i}" aria-label="Remove screenshot">×</button></figcaption></figure>`).join('');
   };
@@ -1534,6 +1592,12 @@ async function viewForm(id) {
     if (s) { const im = form.imgs[+s.dataset.img]; im.label = s.value; im.dirty = true; }
   });
   $('#thumbs').addEventListener('click', e => {
+    const z = e.target.closest('[data-zoom]');
+    if (z) {   // same category order as the detail view, with the labels as currently picked
+      const cur = form.imgs[+z.dataset.zoom], list = sortImgs(form.imgs);
+      openLightbox(list.map(im => ({ url: im.url, label: imgLabel(im.label) })), list.indexOf(cur), z);
+      return;
+    }
     const b = e.target.closest('[data-rm]');
     if (!b) return;
     const [im] = form.imgs.splice(+b.dataset.rm, 1);
@@ -1680,15 +1744,15 @@ function viewPlaybook() {
       <div class="ver-add"><input class="search" id="dont-text" placeholder="Never…" aria-label="New rule"><button type="button" class="btn" id="dont-go" disabled>Add</button></div>
     </article>
   </section>
-  <section class="pb">
-    ${PLAYBOOK.map(s => `<article class="card pb-step">
-      <div class="pb-h"><span class="pb-n mono">${s.n}</span><div><p class="pb-when">${s.when}</p><h2>${s.title}</h2></div></div>
-      ${pbList(s.items)}
+  <section class="pb" aria-label="The method, step by step">
+    ${PLAYBOOK.map(s => `<article class="pb-step">
+      <header class="pb-h"><span class="pb-n mono" aria-hidden="true">${s.n}</span><div><p class="pb-when"><span class="sr-only">Step ${s.n} · </span>${s.when}</p><h2>${s.title}</h2></div></header>
+      <div class="pb-body">${pbList(s.items)}</div>
     </article>`).join('')}
-    <article class="card pb-step pb-kill">
-      <div class="pb-h"><span class="pb-n mono">✕</span><div><p class="pb-when">Any one → no trade</p><h2>Invalidations</h2></div></div>
-      ${pbList(PB_KILL)}
-      <p class="pb-foot">Log the entry timeframe on every trade, and log when the read changes. A trade is <b>valid</b> if it followed the rules in force at that moment, even if the bias flipped earlier in the day.</p>
+    <article class="pb-step pb-kill">
+      <header class="pb-h"><span class="pb-n mono" aria-hidden="true">${pad2(PLAYBOOK.length + 1)}</span><div><p class="pb-when">Any one → no trade</p><h2>Invalidations</h2></div></header>
+      <div class="pb-body">${pbList(PB_KILL)}
+      <p class="pb-foot">Log the entry timeframe on every trade, and log when the read changes. A trade is <b>valid</b> if it followed the rules in force at that moment, even if the bias flipped earlier in the day.</p></div>
     </article>
   </section>
   <section class="row one">
@@ -1733,7 +1797,7 @@ async function viewSettings() {
   const cloud = Cloud.status();
   app.innerHTML = `
   <header class="page-head"><div><h1>Settings</h1><p class="sub">${plural(S.sessions.length, 'session')} stored in this browser${usage ? ' · ' + usage : ''}</p></div></header>
-  <section class="row even">
+  <section class="row even ed-sections">
     <article class="card">
       <h2 style="margin-bottom:14px">Account &amp; risk</h2>
       <div class="set-grid">
@@ -1990,13 +2054,20 @@ async function route() {
   else if (view === 'review') viewReview(id === 'checkpoint' ? 'checkpoint' : 'week', location.hash.split('/')[2]);
   else viewDashboard();
   window.scrollTo(0, 0);
+  enterView();
 }
 
 document.addEventListener('keydown', e => {
-  if (!$('#lightbox').hidden) {
-    if (e.key === 'Escape') closeLightbox();
-    if (e.key === 'ArrowRight') $('.lb-next').click();
-    if (e.key === 'ArrowLeft') $('.lb-prev').click();
+  const lb = $('#lightbox');
+  if (!lb.hidden) {
+    if (e.key === 'Escape') { e.preventDefault(); closeLightbox(); }
+    if (e.key === 'ArrowRight') { e.preventDefault(); stepShot(1); }
+    if (e.key === 'ArrowLeft') { e.preventDefault(); stepShot(-1); }
+    if (e.key === 'Tab') {   // keep focus inside the viewer
+      const f = $$('button', lb).filter(b => !b.hidden), k = f.indexOf(document.activeElement);
+      e.preventDefault();
+      f[(k + (e.shiftKey ? -1 : 1) + f.length) % f.length].focus();
+    }
     return;
   }
   const typing = /INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName) || document.activeElement.isContentEditable;

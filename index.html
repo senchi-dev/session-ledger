@@ -13,7 +13,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Inter+Tight:wght@400;500;600;700;800&display=swap">
-<link rel="stylesheet" href="style.css?v=34">
+<link rel="stylesheet" href="style.css?v=35">
 </head>
 <body>
 <header class="top">
@@ -42,16 +42,16 @@
 
 <div id="toast" role="status" aria-live="polite"></div>
 
-<div id="lightbox" hidden>
+<div id="lightbox" role="dialog" aria-modal="true" aria-label="Screenshot viewer" hidden>
   <button class="lb-close icon-btn" type="button" aria-label="Close">×</button>
   <button class="lb-prev icon-btn" type="button" aria-label="Previous screenshot">‹</button>
-  <figure><img alt=""><figcaption></figcaption></figure>
+  <figure><img alt=""><figcaption aria-live="polite"></figcaption></figure>
   <button class="lb-next icon-btn" type="button" aria-label="Next screenshot">›</button>
 </div>
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="import.js?v=33"></script>
-<script src="review.js?v=33"></script>
-<script src="app.js?v=35"></script>
+<script src="review.js?v=34"></script>
+<script src="app.js?v=36"></script>
 </body>
 </html>
