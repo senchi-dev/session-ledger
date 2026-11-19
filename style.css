@@ -759,4 +759,3 @@ button.hm-c:focus-visible { outline: 2px solid var(--brand); outline-offset: 1px
 @media (prefers-reduced-motion: reduce) { .tk-track { animation: none; } .tk-run[aria-hidden] { display: none; } .ticker { text-overflow: ellipsis; } }
 
 .demo-bar{padding:8px 16px;text-align:center;font-size:12.5px;background:var(--ink);color:var(--ground);letter-spacing:.01em}
-.demo-bar a{color:inherit;text-decoration:underline;margin-left:8px}

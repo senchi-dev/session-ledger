@@ -2339,7 +2339,7 @@ document.addEventListener('keydown', e => {
     return;
   }
   if (DEMO) {
-    document.body.insertAdjacentHTML('afterbegin', '<div class="demo-bar" role="status">Demo mode · sample data only · this is a separate sandbox, your real journal is not loaded and nothing syncs. <a href="' + location.pathname + '">Exit demo</a></div>');
+    document.body.insertAdjacentHTML('afterbegin', '<div class="demo-bar" role="status">Demo mode · sample data only · this is a separate sandbox, your real journal is not loaded and nothing syncs.</div>');
     if (!S.sessions.length) await loadSample();
   }
   window.addEventListener('hashchange', route);
