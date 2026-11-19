@@ -89,13 +89,16 @@ const Q = {
 const Q_LABEL = { goodWin: 'Good win', badWin: 'Bad win (rules broken)', goodLoss: 'Good loss', badLoss: 'Bad loss (rules broken)', ntGood: 'Good pass', ntMissed: 'Missed a valid trade' };
 
 // ───────────────────────── storage ─────────────────────────
+// ?demo opens a separate sandbox: own database, own prefs, no cloud sync, so a visitor can never touch the real journal
+const DEMO = new URLSearchParams(location.search).has('demo');
+
 const DB = (() => {
   let db;
   const req = r => new Promise((res, rej) => { r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); });
   const store = (s, mode = 'readonly') => db.transaction(s, mode).objectStore(s);
   return {
     open: () => new Promise((res, rej) => {
-      const r = indexedDB.open('session-ledger', 1);
+      const r = indexedDB.open(DEMO ? 'session-ledger-demo' : 'session-ledger', 1);
       r.onupgradeneeded = () => {
         const d = r.result;
         d.createObjectStore('trades', { keyPath: 'id' });
@@ -118,10 +121,10 @@ const DB = (() => {
 
 const prefs = (() => {
   let p = {};
-  try { p = JSON.parse(localStorage.getItem('sl-prefs') || '{}') || {}; } catch (e) { p = {}; }
+  try { p = JSON.parse(localStorage.getItem(DEMO ? 'sl-prefs-demo' : 'sl-prefs') || '{}') || {}; } catch (e) { p = {}; }
   return {
     get: (k, d) => (p[k] == null ? d : p[k]),
-    set: (k, v) => { p[k] = v; try { localStorage.setItem('sl-prefs', JSON.stringify(p)); } catch (e) { /* storage unavailable */ } },
+    set: (k, v) => { p[k] = v; try { localStorage.setItem(DEMO ? 'sl-prefs-demo' : 'sl-prefs', JSON.stringify(p)); } catch (e) { /* storage unavailable */ } },
   };
 })();
 
@@ -204,7 +207,7 @@ const Cloud = (() => {
   let sb = null, user = null, busy = false, again = false, timer = null, error = '';
   let outbox = {};                                   // 'trades:<id>' | 'images:<id>' | 'settings' → { op, ts }
   let st = { uid: null, seeded: false, cursor: {}, lastSync: null };
-  const configured = () => !!(CLOUD_CFG.url && CLOUD_CFG.key && window.supabase);
+  const configured = () => !DEMO && !!(CLOUD_CFG.url && CLOUD_CFG.key && window.supabase);
   const saveOutbox = () => DB.put('meta', { k: 'outbox', v: outbox }, true);
   const saveState = () => DB.put('meta', { k: 'cloud', v: st }, true);
   const path = id => `${user.id}/${id}`;
@@ -2335,7 +2338,10 @@ document.addEventListener('keydown', e => {
     app.innerHTML = `<article class="card hero"><h1>Storage unavailable</h1><p>This browser blocked local storage (private window or blocked site data). The journal needs it to keep your entries.</p></article>`;
     return;
   }
-  if (new URLSearchParams(location.search).has('demo') && !S.sessions.length) await loadSample();
+  if (DEMO) {
+    document.body.insertAdjacentHTML('afterbegin', '<div class="demo-bar" role="status">Demo mode · sample data only · this is a separate sandbox, your real journal is not loaded and nothing syncs. <a href="' + location.pathname + '">Exit demo</a></div>');
+    if (!S.sessions.length) await loadSample();
+  }
   window.addEventListener('hashchange', route);
   route();
   Cloud.init().catch(e => console.error('Cloud init', e));
